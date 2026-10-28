@@ -14,7 +14,7 @@
  * which chain 0's own 0x3fb0b also carries, is required at 5 GHz: without it
  * WF1 showed no burst at all (5180-5785 MHz, LNA 5), and with it WF1 came
  * within 2 dB of WF0. At 2.4 GHz it removed WF1's 10-17 dB SNR deficit
- * (its floor rose ~4 dB, signals ~14 dB). An earlier, unshielded study saw it
+ * (its floor rose ~4 dB, signals ~18 dB). An earlier, unshielded study saw it
  * raise signal and noise alike and break the filtered dense taps; on the
  * shielded EDUP neither held (tap 5 and tap 13 both decode more). Chain 0's
  * borrowed LO keeps working because the synthesizer fields are untouched; both
