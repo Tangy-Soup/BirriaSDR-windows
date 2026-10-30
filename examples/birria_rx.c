@@ -8,6 +8,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+#endif
+
+/* fopen's exclusive-create 'x' mode is C11/glibc; msvcrt's fopen rejects it.
+ * Windows uses the OS flags directly, with binary mode made explicit so no
+ * CRT translation can ever corrupt the I/Q stream.
+ */
+static FILE *open_exclusive_write(const char *path)
+{
+#ifdef _WIN32
+    int fd = _open(path, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+    return fd < 0 ? NULL : _fdopen(fd, "wb");
+#else
+    return fopen(path, "wbx");
+#endif
+}
 
 static volatile sig_atomic_t interrupted;
 struct recorder {
@@ -328,14 +347,14 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    recorder.file = fopen(argv[argument], "wbx");
+    recorder.file = open_exclusive_write(argv[argument]);
     if (!recorder.file) {
         perror("Output (must not already exist)");
         birriasdr_close(dev);
         return 1;
     }
     if (recover) {
-        recorder.gaps = fopen(gaps_path, "wx");
+        recorder.gaps = open_exclusive_write(gaps_path);
         if (!recorder.gaps) {
             perror("Gap log (must not already exist)");
             fclose(recorder.file);
