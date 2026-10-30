@@ -238,12 +238,16 @@ int bs_reader_start(struct bs_reader *reader)
      * Never query the maximum raw transfer size: libusb 1.0.30's size query
      * calls an unloaded GetPipePolicy pointer with libusbK. Our reads use
      * bounded rate-specific sizes instead.
+     * BIRRIASDR_NO_RAWIO is a diagnostic arm for 80 MSps overrun A/Bs: it
+     * streams through the driver's normal buffered pipe path instead.
      */
-    if (libusb_endpoint_supports_raw_io(reader->dev->handle, reader->dev->ep_in) != 1)
-        return BIRRIASDR_ERROR_UNSUPPORTED;
-    result = libusb_endpoint_set_raw_io(reader->dev->handle, reader->dev->ep_in, 1);
-    if (result < 0) return bs_usb_error(result);
-    reader->raw_io = true;
+    if (!getenv("BIRRIASDR_NO_RAWIO")) {
+        if (libusb_endpoint_supports_raw_io(reader->dev->handle, reader->dev->ep_in) != 1)
+            return BIRRIASDR_ERROR_UNSUPPORTED;
+        result = libusb_endpoint_set_raw_io(reader->dev->handle, reader->dev->ep_in, 1);
+        if (result < 0) return bs_usb_error(result);
+        reader->raw_io = true;
+    }
 #endif
     for (unsigned i = 0; i < reader->depth; ++i) {
         result = libusb_submit_transfer(reader->slots[i].transfer);

@@ -33,7 +33,7 @@ struct recorder {
     birriasdr_dev_t *dev;
     FILE *file, *gaps;
     uint64_t limit, count, skip, gap_count;
-    int error;
+    int error, null_sink;
 };
 
 /* Full restarts allowed per read with --recover, as in the SoapySDR module;
@@ -56,6 +56,10 @@ static void write_iq(const int16_t *iq, uint32_t count, struct recorder *recorde
     uint8_t bytes[65536];
     if (recorder->limit && count > recorder->limit - recorder->count)
         count = (uint32_t)(recorder->limit - recorder->count);
+    if (recorder->null_sink) { /* Count samples without any conversion or I/O. */
+        recorder->count += count;
+        return;
+    }
     for (uint32_t done = 0; done < count && !recorder->error;) {
         uint32_t n = count - done;
         if (n > sizeof(bytes) / 4)
@@ -185,13 +189,17 @@ int main(int argc, char **argv)
     uint64_t discard = 11719 * 2048;
     int result, close_result, argument = 1, explicit_gain = 0, buffered = 0;
     int pd_n8 = 0, explicit_discard = 0, chain = BIRRIASDR_CHAIN_0, channel_filter = 0;
-    int recover = 0;
+    int recover = 0, null_sink = 0;
+    uint64_t depth = 0; /* 0: library default (192 transfers, max 256). */
     char gaps_path[4096];
     if (argc == 2 && !strcmp(argv[1], "--list"))
         return list_devices();
     while (argument < argc && !strncmp(argv[argument], "--", 2)) {
         if (!strcmp(argv[argument], "--buffered")) {
             buffered = 1;
+            ++argument;
+        } else if (!strcmp(argv[argument], "--null")) {
+            null_sink = 1;
             ++argument;
         } else if (!strcmp(argv[argument], "--recover")) {
             recover = 1;
@@ -224,6 +232,10 @@ int main(int argc, char **argv)
             if (parse_number(argv[argument + 1], &device_index) || device_index > UINT32_MAX)
                 return 1;
             argument += 2;
+        } else if (!strcmp(argv[argument], "--depth") && argument + 1 < argc) {
+            if (parse_number(argv[argument + 1], &depth) || depth > 256)
+                return 1;
+            argument += 2;
         } else if (!strcmp(argv[argument], "--rate") && argument + 1 < argc) {
             if (parse_number(argv[argument + 1], &rate) || rate > UINT32_MAX)
                 return 1;
@@ -248,7 +260,7 @@ int main(int argc, char **argv)
         }
     }
     if (argc - argument < 1 || argc - argument > 3) {
-        fprintf(stderr, "Usage: %s --list | [--device N] [--buffered | --recover] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --list | [--device N] [--buffered | --recover] [--null] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] [--depth N] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
     if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
@@ -276,9 +288,14 @@ int main(int argc, char **argv)
         return 1;
     }
     recorder.skip = discard;
+    recorder.null_sink = null_sink;
     /* Finite buffered reads stay strict; recovery belongs to streamed reads. */
     if (recover && buffered) {
         fprintf(stderr, "--recover streams to the file and cannot be combined with --buffered\n");
+        return 1;
+    }
+    if (null_sink && buffered) {
+        fprintf(stderr, "--null measures the stream without disk conversion and cannot be combined with --buffered\n");
         return 1;
     }
     if (recover && snprintf(gaps_path, sizeof(gaps_path), "%s.gaps", argv[argument]) >= (int)sizeof(gaps_path)) {
@@ -347,11 +364,14 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-    recorder.file = open_exclusive_write(argv[argument]);
-    if (!recorder.file) {
-        perror("Output (must not already exist)");
-        birriasdr_close(dev);
-        return 1;
+    /* --null keeps the output path only to name the gap log; no file is created. */
+    if (!null_sink) {
+        recorder.file = open_exclusive_write(argv[argument]);
+        if (!recorder.file) {
+            perror("Output (must not already exist)");
+            birriasdr_close(dev);
+            return 1;
+        }
     }
     if (recover) {
         recorder.gaps = open_exclusive_write(gaps_path);
@@ -409,11 +429,11 @@ int main(int argc, char **argv)
             write_iq(iq + (size_t)discard * 2, received - (uint32_t)discard, &recorder);
         free(iq);
     } else if (!result) {
-        result = birriasdr_read_async(dev, record, &recorder, 0, 0);
+        result = birriasdr_read_async(dev, record, &recorder, (uint32_t)depth, 0);
     }
     birriasdr_get_stream_stats(dev, &stats);
     close_result = birriasdr_close(dev);
-    if (fclose(recorder.file))
+    if (recorder.file && fclose(recorder.file))
         recorder.error = 1;
     if (recorder.gaps && fclose(recorder.gaps))
         recorder.error = 1;
