@@ -37,3 +37,23 @@ if(BUILD_TESTING)
     set_target_properties(test_soapy_bands PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
     add_test(NAME soapy_bands COMMAND test_soapy_bands)
 endif()
+
+if(BUILD_TESTING)
+    add_executable(test_soapy_gain ../tests/test_soapy_gain.cpp $<TARGET_OBJECTS:test_soapy_gain_controls>)
+    # SoapySDR arrives either as a CMake config (SoapySDR_* vars) or, on this
+    # port's MSYS2 pkg-config fallback, as PkgConfig::SOAPY_SDR.
+    target_include_directories(test_soapy_gain PRIVATE ../include ../src ${LIBUSB_INCLUDE_DIR}
+        ${SoapySDR_INCLUDE_DIRS} ${SOAPY_SDR_INCLUDE_DIR})
+    target_compile_definitions(test_soapy_gain PRIVATE _POSIX_C_SOURCE=200809L)
+    # Pin C++17 explicitly: GCC 16's newer default pulls <ciso646> warnings
+    # through the SoapySDR headers, and mixed c_std/cxx_std features did not
+    # emit the -std flag here.
+    set_target_properties(test_soapy_gain PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    if(TARGET PkgConfig::SOAPY_SDR)
+        target_link_libraries(test_soapy_gain PRIVATE PkgConfig::SOAPY_SDR)
+    else()
+        target_link_libraries(test_soapy_gain PRIVATE ${SoapySDR_LIBRARIES})
+    endif()
+    target_link_libraries(test_soapy_gain PRIVATE Threads::Threads)
+    add_test(NAME soapy_gain_commit COMMAND test_soapy_gain)
+endif()
