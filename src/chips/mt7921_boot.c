@@ -47,6 +47,7 @@
  */
 #include "mt7921.h"
 #include "mt7921_image.h"
+#include <stdlib.h>
 #include <string.h>
 
 /* Disable special endpoint-reset preservation so WFSYS reset restores the ROM
@@ -290,7 +291,24 @@ static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
     BS_TRY(mt_configure_rf(dev));
     dev->stats.stage = BIRRIASDR_STAGE_GAIN;
     BS_TRY(mt_apply_gain(dev));
-    BS_TRY(bs_update32(dev, BS_MMIO, 0x74000018, 0xffff, (1u << 21) | (32u << 8) | 100));
+    /* USB aggregation: enable<<21 | code<<8 | timeout, then the packet limit.
+     * Default is the measured 32:100:30. BIRRIASDR_AGG (1..255, Windows
+     * diagnostic) selects another code for T2-style A/B arms: the ot0tot
+     * fork's native profile pairs code 232 with 256 KiB host reads
+     * (BIRRIASDR_XFER) to cut the completion rate at 80 MSps. */
+    unsigned aggregate = 32u;
+#ifdef _WIN32
+    {
+        const char *text = getenv("BIRRIASDR_AGG");
+        if (text && *text) {
+            char *end;
+            unsigned long value = strtoul(text, &end, 10);
+            if (!*end && value >= 1 && value <= 255)
+                aggregate = (unsigned)value;
+        }
+    }
+#endif
+    BS_TRY(bs_update32(dev, BS_MMIO, 0x74000018, 0xffff, (1u << 21) | (aggregate << 8) | 100));
     BS_TRY(bs_update32(dev, BS_MMIO, 0x7400000c, 0xff, 30));
     dev->stats.stage = BIRRIASDR_STAGE_RF;
     BS_TRY(mt_configure_filter(dev));

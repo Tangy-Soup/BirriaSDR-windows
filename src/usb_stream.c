@@ -19,6 +19,7 @@ struct bs_reader {
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     pthread_t thread;
+    unsigned bytes;
     bool started, stopping, backpressure, raw_io;
     int error;
     unsigned depth, inflight, capacity, head, tail, count;
@@ -47,7 +48,7 @@ static void cancel_transfers(struct bs_reader *reader)
 static void queue_transfer(struct bs_reader *reader, struct libusb_transfer *transfer)
 {
     size_t length = (size_t)transfer->actual_length;
-    memcpy(reader->queue + (size_t)reader->tail * BS_USB_BYTES, transfer->buffer, length);
+    memcpy(reader->queue + (size_t)reader->tail * reader->bytes, transfer->buffer, length);
     reader->lengths[reader->tail] = (unsigned)length;
     reader->tail = (reader->tail + 1) % reader->capacity;
     ++reader->count;
@@ -188,6 +189,7 @@ int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **ou
     reader->backpressure = dev->stream_continuous && dev->recovery_limit &&
                            dev->recovery_callback;
     reader->depth = depth;
+    reader->bytes = bs_usb_xfer_bytes();
     reader->capacity = depth < 64 ? depth * 8 : 512;
     if (pthread_mutex_init(&reader->mutex, NULL)) {
         free(reader);
@@ -199,11 +201,11 @@ int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **ou
         return BIRRIASDR_ERROR_IO;
     }
     reader->slots = calloc(depth, sizeof(*reader->slots));
-    reader->queue = malloc((size_t)reader->capacity * BS_USB_BYTES);
+    reader->queue = malloc((size_t)reader->capacity * reader->bytes);
     reader->lengths = calloc(reader->capacity, sizeof(*reader->lengths));
     if (!reader->slots || !reader->queue || !reader->lengths)
         goto allocation_failed;
-    memset(reader->queue, 0, (size_t)reader->capacity * BS_USB_BYTES);
+    memset(reader->queue, 0, (size_t)reader->capacity * reader->bytes);
     for (unsigned i = 0; i < depth; ++i) {
         struct transfer_slot *slot = &reader->slots[i];
         uint8_t *buffer;
@@ -211,12 +213,12 @@ int bs_reader_create(birriasdr_dev_t *dev, unsigned depth, struct bs_reader **ou
         slot->transfer = libusb_alloc_transfer(0);
         if (!slot->transfer)
             goto allocation_failed;
-        buffer = malloc(BS_USB_BYTES);
+        buffer = malloc(reader->bytes);
         if (!buffer)
             goto allocation_failed;
-        memset(buffer, 0, BS_USB_BYTES);
+        memset(buffer, 0, reader->bytes);
         libusb_fill_bulk_transfer(slot->transfer, dev->handle, dev->ep_in, buffer,
-                                  BS_USB_BYTES, receive_transfer, slot, 0);
+                                  reader->bytes, receive_transfer, slot, 0);
     }
     *out = reader;
     return 0;
@@ -297,7 +299,7 @@ int bs_reader_take(struct bs_reader *reader, uint8_t *data, size_t *length, unsi
         result = reader->error;
     if (!result && reader->count) {
         *length = reader->lengths[reader->head];
-        memcpy(data, reader->queue + (size_t)reader->head * BS_USB_BYTES, *length);
+        memcpy(data, reader->queue + (size_t)reader->head * reader->bytes, *length);
         reader->head = (reader->head + 1) % reader->capacity;
         --reader->count;
         resume_transfers(reader);

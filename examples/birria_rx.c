@@ -448,5 +448,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "Saved %llu complex samples; stream=%s; firmware state=%u; stage=%d; reset=%s\n",
              (unsigned long long)recorder.count, birriasdr_strerror(result),
              stats.firmware_state, stats.stage, birriasdr_strerror(stats.reset_error));
+    fprintf(stderr, "Transport: %llu packets, %llu USB bytes, %u DMA errors\n",
+             (unsigned long long)stats.packets, (unsigned long long)stats.usb_bytes, stats.dma_errors);
     return result || close_result || recorder.error ? 1 : 0;
 }

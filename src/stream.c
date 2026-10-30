@@ -422,7 +422,7 @@ int bs_stream(birriasdr_dev_t *dev, birriasdr_read_async_cb_t callback,
     delivery = (struct delivery){.dev = dev, .callback = callback, .context = context,
                                 .capacity = buffer_samples};
     delivery.iq = calloc((size_t)buffer_samples * 2, sizeof(*delivery.iq));
-    bytes = malloc(BS_USB_BYTES);
+    bytes = malloc(bs_usb_xfer_bytes());
     if (dev->decimation > 1) {
         delivery.halfband = malloc(sizeof(*delivery.halfband));
         delivery.packet = malloc(sizeof(*delivery.packet) * 2 * BS_PACKET_SAMPLES);
