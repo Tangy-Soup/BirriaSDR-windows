@@ -8,6 +8,14 @@ option(BIRRIASDR_SOAPY "Build the SoapySDR module (needs C++17 and SoapySDR)" OF
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
+if(WIN32)
+    add_compile_definitions(WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+    # io.c uses BCryptGenRandom on Windows; every target compiles or links it.
+    link_libraries(bcrypt)
+    if(MSVC)
+        add_compile_options(/experimental:c11atomics)
+    endif()
+endif()
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig QUIET)
@@ -15,7 +23,7 @@ if(PkgConfig_FOUND)
     pkg_check_modules(PC_LIBUSB QUIET libusb-1.0)
 endif()
 find_path(LIBUSB_INCLUDE_DIR libusb.h HINTS ${PC_LIBUSB_INCLUDE_DIRS} PATH_SUFFIXES libusb-1.0)
-find_library(LIBUSB_LIBRARY NAMES usb-1.0 HINTS ${PC_LIBUSB_LIBRARY_DIRS})
+find_library(LIBUSB_LIBRARY NAMES usb-1.0 libusb-1.0 HINTS ${PC_LIBUSB_LIBRARY_DIRS})
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(LIBUSB REQUIRED_VARS LIBUSB_LIBRARY LIBUSB_INCLUDE_DIR)
 
@@ -44,17 +52,34 @@ target_include_directories(birriasdr PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(birriasdr PRIVATE ${LIBUSB_LIBRARY} Threads::Threads)
-set_target_properties(birriasdr PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0)
+set_target_properties(birriasdr PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 0
+    WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 add_executable(birria_rx examples/birria_rx.c)
 target_link_libraries(birria_rx PRIVATE birriasdr)
 target_compile_definitions(birria_rx PRIVATE _POSIX_C_SOURCE=200809L)
-add_executable(birria_ble examples/birria_ble.c)
-target_link_libraries(birria_ble PRIVATE birriasdr Threads::Threads m)
-target_compile_definitions(birria_ble PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
-if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    # The FIR and discriminator loops only vectorize with reassociation.
-    target_compile_options(birria_ble PRIVATE -O3 -ffast-math)
+if(NOT WIN32)
+    # BLE collection uses POSIX resource/statvfs interfaces; port before enabling.
+    add_executable(birria_ble examples/birria_ble.c)
+    target_link_libraries(birria_ble PRIVATE birriasdr Threads::Threads m)
+    target_compile_definitions(birria_ble PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        # The FIR and discriminator loops only vectorize with reassociation.
+        target_compile_options(birria_ble PRIVATE -O3 -ffast-math)
+    endif()
+endif()
+if(WIN32)
+    # Stage the pinned runtime next to the executables so the import library
+    # resolves at run time without installation.
+    get_filename_component(LIBUSB_LIBRARY_DIR "${LIBUSB_LIBRARY}" DIRECTORY)
+    find_file(LIBUSB_RUNTIME NAMES libusb-1.0.dll
+        HINTS "${LIBUSB_LIBRARY_DIR}" "${LIBUSB_LIBRARY_DIR}/../bin" "${LIBUSB_LIBRARY_DIR}/../dll")
+    if(LIBUSB_RUNTIME)
+        get_filename_component(LIBUSB_RUNTIME_NAME "${LIBUSB_RUNTIME}" NAME)
+        add_custom_command(TARGET birria_rx POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${LIBUSB_RUNTIME}" "$<TARGET_FILE_DIR:birria_rx>/${LIBUSB_RUNTIME_NAME}")
+    endif()
 endif()
 file(RELATIVE_PATH BIRRIA_BIN_TO_LIB "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_LIBDIR}")
 if(APPLE)
@@ -147,10 +172,13 @@ if(BUILD_TESTING)
     target_compile_features(test_stability PRIVATE c_std_11)
     target_compile_definitions(test_stability PRIVATE _POSIX_C_SOURCE=200809L)
     target_link_libraries(test_stability PRIVATE birriasdr Threads::Threads)
-    add_executable(test_recovery tests/test_recovery.c)
-    target_compile_features(test_recovery PRIVATE c_std_11)
-    target_compile_definitions(test_recovery PRIVATE _POSIX_C_SOURCE=200809L)
-    target_link_libraries(test_recovery PRIVATE birriasdr)
+    if(NOT WIN32)
+        # The optional process-suspension hardware test needs POSIX signals.
+        add_executable(test_recovery tests/test_recovery.c)
+        target_compile_features(test_recovery PRIVATE c_std_11)
+        target_compile_definitions(test_recovery PRIVATE _POSIX_C_SOURCE=200809L)
+        target_link_libraries(test_recovery PRIVATE birriasdr)
+    endif()
     add_executable(test_control_recovery tests/test_control_recovery.c $<TARGET_OBJECTS:birriasdr_objects>)
     target_compile_features(test_control_recovery PRIVATE c_std_11)
     target_include_directories(test_control_recovery PRIVATE include src ${LIBUSB_INCLUDE_DIR})
@@ -172,10 +200,17 @@ endif()
 file(RELATIVE_PATH BIRRIA_PC_TO_PREFIX "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_PREFIX}")
 file(RELATIVE_PATH BIRRIA_PC_TO_INCLUDE "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
 configure_file(birriasdr.pc.in birriasdr.pc @ONLY)
-install(TARGETS birriasdr birria_rx birria_ble
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(WIN32)
+    install(TARGETS birriasdr birria_rx
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+else()
+    install(TARGETS birriasdr birria_rx birria_ble
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(FILES include/birriasdr.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/birriasdr.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 install(FILES LICENSE LICENSES/BSD-3-Clause-Clear.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/birriasdr)

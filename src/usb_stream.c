@@ -19,7 +19,7 @@ struct bs_reader {
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     pthread_t thread;
-    bool started, stopping, backpressure;
+    bool started, stopping, backpressure, raw_io;
     int error;
     unsigned depth, inflight, capacity, head, tail, count;
     struct transfer_slot *slots;
@@ -146,6 +146,12 @@ static void resume_transfers(struct bs_reader *reader)
 static void *pump_events(void *context)
 {
     struct bs_reader *reader = context;
+#ifdef _WIN32
+    /* Keep USB completions flowing while the application thread blocks or
+     * writes; a stalled event pump would show up as completion gaps.
+     */
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
     for (;;) {
         bool done;
         int result;
@@ -225,6 +231,20 @@ allocation_failed:
 int bs_reader_start(struct bs_reader *reader)
 {
     int result = 0;
+#ifdef _WIN32
+    /* Bypass Windows bulk buffering so all reads can reach the USB controller.
+     * Our read sizes are multiples of the SuperSpeed 1024-byte packet size.
+     * Leave ROM traffic in normal mode, and restore it only after draining.
+     * Never query the maximum raw transfer size: libusb 1.0.30's size query
+     * calls an unloaded GetPipePolicy pointer with libusbK. Our reads use
+     * bounded rate-specific sizes instead.
+     */
+    if (libusb_endpoint_supports_raw_io(reader->dev->handle, reader->dev->ep_in) != 1)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+    result = libusb_endpoint_set_raw_io(reader->dev->handle, reader->dev->ep_in, 1);
+    if (result < 0) return bs_usb_error(result);
+    reader->raw_io = true;
+#endif
     for (unsigned i = 0; i < reader->depth; ++i) {
         result = libusb_submit_transfer(reader->slots[i].transfer);
         if (result < 0)
@@ -293,6 +313,12 @@ void bs_reader_destroy(struct bs_reader *reader)
         pthread_mutex_unlock(&reader->mutex);
         pthread_join(reader->thread, NULL);
     }
+#ifdef _WIN32
+    /* Only after every transfer drained: raw mode must not affect libusb's
+     * cancellation bookkeeping. */
+    if (reader->raw_io)
+        libusb_endpoint_set_raw_io(reader->dev->handle, reader->dev->ep_in, 0);
+#endif
     if (reader->slots) {
         for (unsigned i = 0; i < reader->depth; ++i) {
             struct libusb_transfer *transfer = reader->slots[i].transfer;

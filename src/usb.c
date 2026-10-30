@@ -5,12 +5,15 @@
  */
 #include "internal.h"
 #include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 /* Enumerate known identities without assuming identical RF wiring across boards. */
 static const struct bs_usb_id devices[] = {
@@ -54,6 +57,9 @@ int bs_control(birriasdr_dev_t *dev, uint8_t type, uint8_t request,
 {
     int result = libusb_control_transfer(dev->handle, type, request, value, index,
                                          data, length, 1000);
+    if (result < 0 && getenv("BIRRIASDR_TRACE_USB"))
+        fprintf(stderr, "USB control failed: type=%02x request=%02x value=%04x index=%04x length=%u libusb=%d\n",
+                type, request, value, index, length, result);
     if (result < 0)
         return bs_usb_error(result);
     return result == length ? 0 : BIRRIASDR_ERROR_IO;
@@ -95,6 +101,9 @@ int bs_bulk_out(birriasdr_dev_t *dev, uint8_t ep, const uint8_t *data, int lengt
 {
     int actual = 0;
     int result = libusb_bulk_transfer(dev->handle, ep, (uint8_t *)data, length, &actual, 3000);
+    if (result < 0 && getenv("BIRRIASDR_TRACE_USB"))
+        fprintf(stderr, "USB bulk OUT failed: endpoint=%02x length=%d actual=%d libusb=%d\n",
+                ep, length, actual, result);
     if (result < 0)
         return bs_usb_error(result);
     return actual == length ? 0 : BIRRIASDR_ERROR_IO;
@@ -116,6 +125,10 @@ int bs_usb_prepare_endpoints(birriasdr_dev_t *dev)
         int actual = 0;
         int result = libusb_bulk_transfer(dev->handle, dev->ep_in, bytes,
                                           sizeof(bytes), &actual, 10);
+        if (result < 0 && result != LIBUSB_ERROR_TIMEOUT && result != LIBUSB_ERROR_OVERFLOW &&
+            getenv("BIRRIASDR_TRACE_USB"))
+            fprintf(stderr, "USB drain failed: endpoint=%02x actual=%d libusb=%d\n",
+                    dev->ep_in, actual, result);
         if (result == LIBUSB_ERROR_TIMEOUT && actual == 0)
             return 0;
         if (result != LIBUSB_ERROR_TIMEOUT && result != LIBUSB_ERROR_OVERFLOW)
@@ -150,10 +163,29 @@ int bs_usb_recover(birriasdr_dev_t *dev)
 
 /* Share the existing prototype's lock for the tested dongle. Additional devices
  * use bus/address locks; all locks are advisory alongside libusb's interface claim.
- * Refuse symlinks/nonregular files in the shared temporary directory.
+ * POSIX locks are lock files under /tmp. Windows has neither flock nor lock
+ * files: a named semaphore per bus/address plays the same role across
+ * processes and is held for the lifetime of the open device.
  */
 static int lock_device(birriasdr_dev_t *dev, const struct bs_usb_id *id, libusb_device *usb)
 {
+#ifdef _WIN32
+    char name[96];
+    DWORD wait;
+    HANDLE lock;
+    (void)id;
+    snprintf(name, sizeof(name), "Local\\BirriaSDR-%u-%u",
+             libusb_get_bus_number(usb), libusb_get_device_address(usb));
+    lock = CreateSemaphoreA(NULL, 1, 1, name);
+    if (!lock) return BIRRIASDR_ERROR_ACCESS;
+    wait = WaitForSingleObject(lock, 0);
+    if (wait != WAIT_OBJECT_0) {
+        CloseHandle(lock);
+        return wait == WAIT_TIMEOUT ? BIRRIASDR_ERROR_BUSY : BIRRIASDR_ERROR_ACCESS;
+    }
+    dev->device_lock = lock;
+    return 0;
+#else
     char path[128];
     struct stat st;
     if (id->vid == 0x3574 && id->pid == 0x6211)
@@ -169,6 +201,7 @@ static int lock_device(birriasdr_dev_t *dev, const struct bs_usb_id *id, libusb_
     if (flock(dev->lock_fd, LOCK_EX | LOCK_NB))
         return errno == EWOULDBLOCK ? BIRRIASDR_ERROR_BUSY : BIRRIASDR_ERROR_ACCESS;
     return 0;
+#endif
 }
 
 /* mt76 assigns endpoint roles by descriptor order within the ff/ff/ff interface:
@@ -232,6 +265,7 @@ static int claim_device(birriasdr_dev_t *dev, libusb_device *usb, const struct b
     dev->frequency = dev->backend->default_frequency;
     dev->rate = dev->backend->default_rate;
     dev->decimation = 1;
+    dev->interface_claimed = false;
     BS_TRY(lock_device(dev, id, usb));
     BS_TRY(bs_usb_error(libusb_open(usb, &dev->handle)));
     BS_TRY(find_interface(dev, usb));
@@ -245,6 +279,7 @@ static int claim_device(birriasdr_dev_t *dev, libusb_device *usb, const struct b
         dev->interface_number = -1;
         return bs_usb_error(result);
     }
+    dev->interface_claimed = true;
     dev->io = (struct bs_io){dev, usb_read32, usb_write32};
     return dev->backend->identify(dev);
 }
@@ -254,6 +289,14 @@ static int claim_device(birriasdr_dev_t *dev, libusb_device *usb, const struct b
  */
 int bs_usb_discover(uint32_t index, struct birriasdr_device_info *info, birriasdr_dev_t *dev)
 {
+#ifdef _WIN32
+    /* Older Windows/libusbK runtimes can crash during even a register read.
+     * Reject before initializing or opening USB rather than risking the device.
+     */
+    const struct libusb_version *version = libusb_get_version();
+    if (version->major == 1 && version->minor == 0 && version->micro < 30)
+        return BIRRIASDR_ERROR_UNSUPPORTED;
+#endif
     libusb_context *context = NULL;
     libusb_device **list = NULL;
     ssize_t count;
@@ -302,12 +345,19 @@ int bs_usb_discover(uint32_t index, struct birriasdr_device_info *info, birriasd
 void bs_usb_close(birriasdr_dev_t *dev)
 {
     if (dev->handle) {
-        if (dev->interface_number >= 0 && !dev->usb_lost)
+        if (dev->interface_claimed && !dev->usb_lost)
             libusb_release_interface(dev->handle, dev->interface_number);
         libusb_close(dev->handle);
     }
     if (dev->usb)
         libusb_exit(dev->usb);
+#ifdef _WIN32
+    if (dev->device_lock) {
+        ReleaseSemaphore(dev->device_lock, 1, NULL);
+        CloseHandle(dev->device_lock);
+    }
+#else
     if (dev->lock_fd >= 0)
         close(dev->lock_fd);
+#endif
 }

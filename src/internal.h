@@ -6,7 +6,7 @@
 
 #include "birriasdr.h"
 #include <libusb.h>
-#include <pthread.h>
+#include "platform.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 
@@ -81,7 +81,13 @@ struct birriasdr_dev {
     libusb_context *usb;
     libusb_device_handle *handle;
     int interface_number;
+    bool interface_claimed;
+#ifdef _WIN32
+    /* Named semaphore HANDLE; flock and lock files do not exist here. */
+    HANDLE device_lock;
+#else
     int lock_fd;
+#endif
     uint8_t ep_in, ep_command, ep_download;
     const struct bs_backend *backend;
     uint64_t min_frequency, max_frequency;
@@ -177,6 +183,7 @@ int bs_poll32(birriasdr_dev_t *dev, enum bs_space space, uint32_t address,
               uint32_t mask, uint32_t expected, unsigned timeout_ms);
 uint64_t bs_now_ns(void);
 void bs_sleep_us(unsigned microseconds);
+int bs_random32(uint32_t *value);
 uint32_t bs_get_le32(const uint8_t *bytes);
 void bs_put_le32(uint8_t *bytes, uint32_t value);
 void bs_put_le16(uint8_t *bytes, uint16_t value);

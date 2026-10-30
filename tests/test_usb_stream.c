@@ -49,6 +49,29 @@ struct libusb_transfer * LIBUSB_CALL libusb_alloc_transfer(int iso_packets)
     return transfer;
 }
 
+#ifdef _WIN32
+/* The Windows start path configures raw endpoint I/O on a real handle. The
+ * fake device records the transitions instead; none of these may be left
+ * enabled after the reader drains. Never call the max-size query here: it
+ * crashes with libusbK (unloaded GetPipePolicy pointer).
+ */
+static int raw_io_enabled;
+int LIBUSB_CALL libusb_endpoint_supports_raw_io(libusb_device_handle *dev_handle,
+                                                uint8_t endpoint)
+{
+    (void)dev_handle; (void)endpoint;
+    return 1;
+}
+int LIBUSB_CALL libusb_endpoint_set_raw_io(libusb_device_handle *dev_handle,
+                                           uint8_t endpoint, int enable)
+{
+    (void)dev_handle; (void)endpoint;
+    if (enable) ++raw_io_enabled;
+    else --raw_io_enabled;
+    return 0;
+}
+#endif
+
 /* Freeing a transfer still owned by the event loop is a test failure. */
 void LIBUSB_CALL libusb_free_transfer(struct libusb_transfer *transfer)
 {
@@ -127,6 +150,9 @@ static void reset_mock(unsigned limit, unsigned fail_submit)
     CHECK(mock.count == 0 && mock.allocated == mock.freed);
     mock.allocated = mock.freed = mock.submitted = mock.completions = 0;
     mock.allocations = mock.fail_allocation = 0;
+#ifdef _WIN32
+    CHECK(raw_io_enabled == 0);
+#endif
     mock.status = LIBUSB_TRANSFER_COMPLETED;
     mock.submit_error = LIBUSB_ERROR_IO;
     mock.limit = limit;

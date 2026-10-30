@@ -47,9 +47,7 @@
  */
 #include "mt7921.h"
 #include "mt7921_image.h"
-#include <fcntl.h>
 #include <string.h>
-#include <unistd.h>
 
 /* Disable special endpoint-reset preservation so WFSYS reset restores the ROM
  * transport consistently. This register uses the USB host-wrapper request pair.
@@ -201,16 +199,9 @@ static int require_unpatched_rom(birriasdr_dev_t *dev)
  */
 static int initialize_mailbox(birriasdr_dev_t *dev, uint32_t packets)
 {
-    uint8_t nonce[4];
-    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-    ssize_t count;
-    if (fd < 0)
-        return BIRRIASDR_ERROR_IO;
-    count = read(fd, nonce, sizeof(nonce));
-    close(fd);
-    if (count != sizeof(nonce))
-        return BIRRIASDR_ERROR_IO;
-    dev->nonce = bs_get_le32(nonce);
+    int result = bs_random32(&dev->nonce);
+    if (result < 0)
+        return result;
     for (unsigned i = 0; i < 16; ++i) {
         uint32_t expected = i == 1 ? dev->nonce : i == 8 ? packets : 0;
         uint32_t actual;
