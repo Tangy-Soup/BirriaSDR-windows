@@ -56,7 +56,8 @@ set_target_properties(birriasdr PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 
     WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
 add_executable(birria_rx examples/birria_rx.c)
-target_link_libraries(birria_rx PRIVATE birriasdr)
+target_link_libraries(birria_rx PRIVATE birriasdr Threads::Threads)
+target_include_directories(birria_rx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src) # platform.h pthread shim
 target_compile_definitions(birria_rx PRIVATE _POSIX_C_SOURCE=200809L)
 if(NOT WIN32)
     # BLE collection uses POSIX resource/statvfs interfaces; port before enabling.

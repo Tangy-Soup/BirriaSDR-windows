@@ -3,6 +3,7 @@
  * A deliberately small recorder: no UI, DSP, device power cycling or hidden driver.
  */
 #include "birriasdr.h"
+#include "platform.h" /* pthread subset: real pthreads on POSIX, the shim on Windows */
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -31,6 +32,7 @@ static FILE *open_exclusive_write(const char *path)
 static volatile sig_atomic_t interrupted;
 struct recorder {
     birriasdr_dev_t *dev;
+    struct writer *writer;
     FILE *file, *gaps;
     uint64_t limit, count, skip, gap_count;
     int error, null_sink;
@@ -49,18 +51,13 @@ static void on_signal(int signal_number)
 }
 
 /* Write conventional little-endian signed I,Q, preserving all 14 source bits.
- * A requested sample limit is a file limit; cancellation still drains hardware.
+ * Returns 0 on success. Used by the writer thread and the finite buffered
+ * path; streamed callbacks never call this directly.
  */
-static void write_iq(const int16_t *iq, uint32_t count, struct recorder *recorder)
+static int write_samples(const int16_t *iq, uint32_t count, FILE *file)
 {
     uint8_t bytes[65536];
-    if (recorder->limit && count > recorder->limit - recorder->count)
-        count = (uint32_t)(recorder->limit - recorder->count);
-    if (recorder->null_sink) { /* Count samples without any conversion or I/O. */
-        recorder->count += count;
-        return;
-    }
-    for (uint32_t done = 0; done < count && !recorder->error;) {
+    for (uint32_t done = 0; done < count;) {
         uint32_t n = count - done;
         if (n > sizeof(bytes) / 4)
             n = sizeof(bytes) / 4;
@@ -69,14 +66,107 @@ static void write_iq(const int16_t *iq, uint32_t count, struct recorder *recorde
             bytes[2 * i] = (uint8_t)value;
             bytes[2 * i + 1] = (uint8_t)(value >> 8);
         }
-        if (fwrite(bytes, 4, n, recorder->file) != n)
-            recorder->error = 1;
-        else
-            recorder->count += n;
+        if (fwrite(bytes, 4, n, file) != n)
+            return 1;
         done += n;
+    }
+    return 0;
+}
+
+/* A requested sample limit is a file limit; cancellation still drains hardware. */
+static void write_iq(const int16_t *iq, uint32_t count, struct recorder *recorder)
+{
+    if (recorder->limit && count > recorder->limit - recorder->count)
+        count = (uint32_t)(recorder->limit - recorder->count);
+    if (recorder->null_sink)
+        recorder->count += count;
+    else if (write_samples(iq, count, recorder->file))
+        recorder->error = 1;
+    else
+        recorder->count += count;
+}
+
+/* Streamed file recordings decouple the disk from the USB pump: the sample
+ * callback only copies into this prefaulted ring and a dedicated thread does
+ * the conversion and fwrite. In-callback fwrite overruns the device when NTFS
+ * writeback throttles (measured 2026-10-30: ~12 gaps/s at 80 MSps to disk,
+ * 0 with the ring). 256 MiB bridges 0.8 s at 80 MSps / 1.6 s at 40 MSps; a
+ * full ring or an I/O error stops the recording — nothing is dropped silently.
+ */
+#define RING_SAMPLES (128u * 1024u * 1024u) /* int16 values = 256 MiB */
+#define WRITER_STAGING_SAMPLES (512u * 1024u)
+
+struct writer {
+    FILE *file;
+    pthread_t thread;
+    pthread_mutex_t lock;
+    pthread_cond_t filled;
+    int16_t *ring;
+    uint64_t head, tail; /* int16 counts, monotonic */
+    int done, failed;
+};
+
+static int16_t writer_staging[WRITER_STAGING_SAMPLES]; /* writer thread only */
+
+/* samples is complex samples; the ring accounts int16 values (2 per sample). */
+static int writer_push(struct writer *w, const int16_t *iq, uint32_t samples)
+{
+    uint64_t values = (uint64_t)samples * 2;
+    int result = 0;
+    pthread_mutex_lock(&w->lock);
+    if (w->failed || values > RING_SAMPLES - (w->head - w->tail)) {
+        if (!w->failed)
+            fprintf(stderr, "Writer ring full: disk cannot keep up; stopping the recording\n");
+        result = 1;
+    } else {
+        size_t at = (size_t)(w->head % RING_SAMPLES);
+        size_t first = RING_SAMPLES - at < values ? RING_SAMPLES - at : values;
+        memcpy(w->ring + at, iq, first * sizeof(*iq));
+        memcpy(w->ring, iq + first, (values - first) * sizeof(*iq));
+        w->head += values;
+        pthread_cond_signal(&w->filled);
+    }
+    pthread_mutex_unlock(&w->lock);
+    return result;
+}
+
+static void *writer_thread(void *context)
+{
+    struct writer *w = context;
+    for (;;) {
+        uint32_t take = 0; /* int16 values; every push is whole complex samples */
+        int finish, failed;
+        pthread_mutex_lock(&w->lock);
+        while (w->head == w->tail && !w->done && !w->failed)
+            pthread_cond_wait(&w->filled, &w->lock);
+        uint64_t available = w->head - w->tail;
+        if (available) {
+            take = available < WRITER_STAGING_SAMPLES ? (uint32_t)available : WRITER_STAGING_SAMPLES;
+            take &= ~1u;
+            size_t at = (size_t)(w->tail % RING_SAMPLES);
+            size_t first = RING_SAMPLES - at < take ? RING_SAMPLES - at : take;
+            memcpy(writer_staging, w->ring + at, first * sizeof(*writer_staging));
+            memcpy(writer_staging + first, w->ring, (take - first) * sizeof(*writer_staging));
+            w->tail += take;
+        }
+        finish = w->done && !available;
+        failed = w->failed;
+        pthread_mutex_unlock(&w->lock);
+        if (take && !failed && write_samples(writer_staging, take / 2, w->file)) {
+            pthread_mutex_lock(&w->lock);
+            w->failed = 1;
+            pthread_mutex_unlock(&w->lock);
+            fprintf(stderr, "Writer I/O error; stopping the recording\n");
+            failed = 1;
+        }
+        if (finish || failed)
+            return NULL;
     }
 }
 
+/* Streamed capture: copy into the writer ring — or just count with --null —
+ * and never touch the disk from this callback.
+ */
 static void record(const int16_t *iq, uint32_t count, uint64_t first, void *context)
 {
     struct recorder *recorder = context;
@@ -87,7 +177,16 @@ static void record(const int16_t *iq, uint32_t count, uint64_t first, void *cont
         iq += (size_t)n * 2;
         count -= n;
     }
-    write_iq(iq, count, recorder);
+    if (recorder->limit && count > recorder->limit - recorder->count)
+        count = (uint32_t)(recorder->limit - recorder->count);
+    if (recorder->writer) {
+        if (writer_push(recorder->writer, iq, count))
+            recorder->error = 1;
+        else
+            recorder->count += count;
+    } else {
+        recorder->count += count; /* --null */
+    }
     if (interrupted || recorder->error || (recorder->limit && recorder->count >= recorder->limit))
         birriasdr_cancel_async(recorder->dev);
 }
@@ -179,6 +278,7 @@ int main(int argc, char **argv)
     birriasdr_dev_t *dev = NULL;
     struct birriasdr_stream_stats stats;
     struct recorder recorder = {0};
+    struct writer writer = {0};
     uint64_t frequency = 0;
     uint64_t bandwidth = 0, rate = 0, device_index = 0;
     struct birriasdr_gain gain = {2, 8, 0};
@@ -409,6 +509,28 @@ int main(int argc, char **argv)
     }
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+    /* Streamed file captures decouple the disk from the USB pump (see struct
+     * writer). The ring is prefaulted so no first-touch page fault lands in
+     * the sample callback. */
+    if (!result && !buffered && !null_sink) {
+        recorder.writer = &writer;
+        writer.file = recorder.file;
+        writer.ring = malloc((size_t)RING_SAMPLES * sizeof(*writer.ring));
+        if (writer.ring)
+            memset(writer.ring, 0, (size_t)RING_SAMPLES * sizeof(*writer.ring));
+        if (!writer.ring || pthread_mutex_init(&writer.lock, NULL) ||
+            pthread_cond_init(&writer.filled, NULL) ||
+            pthread_create(&writer.thread, NULL, writer_thread, &writer)) {
+            fprintf(stderr, "Writer thread setup failed\n");
+            free(writer.ring);
+            if (recorder.gaps)
+                fclose(recorder.gaps);
+            if (recorder.file)
+                fclose(recorder.file);
+            birriasdr_close(dev);
+            return 1;
+        }
+    }
     if (!result && buffered) {
         /* Keep disk conversion/I/O out of the finite acquisition. Check signal
          * cancellation after initialization and at most two seconds of RF.
@@ -430,6 +552,19 @@ int main(int argc, char **argv)
         free(iq);
     } else if (!result) {
         result = birriasdr_read_async(dev, record, &recorder, (uint32_t)depth, 0);
+    }
+    if (recorder.writer) { /* Drain the ring before the file can close. */
+        pthread_mutex_lock(&writer.lock);
+        writer.done = 1;
+        pthread_cond_signal(&writer.filled);
+        pthread_mutex_unlock(&writer.lock);
+        pthread_join(writer.thread, NULL);
+        if (writer.failed)
+            recorder.error = 1;
+        free(writer.ring);
+        pthread_mutex_destroy(&writer.lock);
+        pthread_cond_destroy(&writer.filled);
+        recorder.writer = NULL;
     }
     birriasdr_get_stream_stats(dev, &stats);
     close_result = birriasdr_close(dev);
