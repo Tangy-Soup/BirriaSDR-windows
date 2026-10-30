@@ -100,7 +100,8 @@ static int list_devices(void)
         struct birriasdr_device_info info;
         if (birriasdr_get_device_info((uint32_t)i, &info))
             return 1;
-        printf("%d: %04x:%04x %s [%s]\n", i, info.vid, info.pid, info.name,
+        printf("%d: %04x:%04x bus %d address %d %s [%s]\n", i, info.vid, info.pid,
+               info.bus, info.address, info.name,
                info.capabilities & BIRRIASDR_CAP_RX ? "RX implemented" : "unsupported");
     }
     return 0;
@@ -146,8 +147,9 @@ static int parse_gain_code(const char *text, unsigned maximum, uint8_t *value)
     return 0;
 }
 
-/* Record device 0, with optional center, finite count and raw manual gain codes.
- * Keep the example's flags small; applications can use the full public API.
+/* Record one device (default index 0), with optional center, finite count and
+ * raw manual gain codes. Keep the example's flags small; applications can use
+ * the full public API.
  */
 int main(int argc, char **argv)
 {
@@ -155,7 +157,7 @@ int main(int argc, char **argv)
     struct birriasdr_stream_stats stats;
     struct recorder recorder = {0};
     uint64_t frequency = 0;
-    uint64_t bandwidth = 0, rate = 0;
+    uint64_t bandwidth = 0, rate = 0, device_index = 0;
     struct birriasdr_gain gain = {2, 8, 0};
     /* About 600 ms at 40 MSps, in whole 2048-sample packets: past the detector's
      * measured adaptation after packet-detect suppression starts (0.1-252 ms
@@ -199,6 +201,10 @@ int main(int argc, char **argv)
                 return 1;
             explicit_discard = 1;
             argument += 2;
+        } else if (!strcmp(argv[argument], "--device") && argument + 1 < argc) {
+            if (parse_number(argv[argument + 1], &device_index) || device_index > UINT32_MAX)
+                return 1;
+            argument += 2;
         } else if (!strcmp(argv[argument], "--rate") && argument + 1 < argc) {
             if (parse_number(argv[argument + 1], &rate) || rate > UINT32_MAX)
                 return 1;
@@ -223,7 +229,7 @@ int main(int argc, char **argv)
         }
     }
     if (argc - argument < 1 || argc - argument > 3) {
-        fprintf(stderr, "Usage: %s --list | [--buffered | --recover] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
+        fprintf(stderr, "Usage: %s --list | [--device N] [--buffered | --recover] [--frequency Hz] [--rate Hz] [--bandwidth Hz] [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--chain 0|1|both] [--discard SAMPLES] output.cs16 [complex-samples [manual]]\n", argv[0]);
         return 1;
     }
     if (argc - argument >= 2 && parse_number(argv[argument + 1], &recorder.limit))
@@ -268,7 +274,7 @@ int main(int argc, char **argv)
                 (unsigned long long)buffer_limit);
         return 1;
     }
-    result = birriasdr_open(&dev, 0);
+    result = birriasdr_open(&dev, (uint32_t)device_index);
     if (result < 0) {
         fprintf(stderr, "Open: %s\n", birriasdr_strerror(result));
         return 1;
