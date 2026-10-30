@@ -124,6 +124,26 @@ if(BUILD_TESTING)
     target_include_directories(test_decimate PRIVATE include src ${LIBUSB_INCLUDE_DIR})
     target_link_libraries(test_decimate PRIVATE m)
     add_test(NAME halfband_decimator COMMAND test_decimate)
+    # Injected I/O only, like test_chain: real capture/chain code over a fake
+    # MMIO backend, no USB. mt7921_capture.c carries an unreferenced ops table
+    # pointing at the other chip modules; GNU's section GC drops it on every
+    # platform this port builds tests on.
+    add_executable(test_capture_readback tests/test_capture_readback.c src/chips/mt7921_capture.c src/chips/mt7921_chain.c src/io.c)
+    target_compile_features(test_capture_readback PRIVATE c_std_11)
+    target_compile_definitions(test_capture_readback PRIVATE _POSIX_C_SOURCE=200809L)
+    target_include_directories(test_capture_readback PRIVATE include src ${LIBUSB_INCLUDE_DIR})
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test_capture_readback PRIVATE -ffunction-sections -fdata-sections)
+        target_link_options(test_capture_readback PRIVATE -Wl,--gc-sections)
+    endif()
+    if(WIN32)
+        # PE ld keeps the grouped .text$ holding capture.c's table-only
+        # validate(); satisfy its cross-module calls without compiling the
+        # real tune/gain modules (which would fight the test's RF stubs).
+        target_sources(test_capture_readback PRIVATE tests/test_capture_readback_link_stubs.c)
+    endif()
+    target_link_libraries(test_capture_readback PRIVATE Threads::Threads)
+    add_test(NAME capture_readback COMMAND test_capture_readback)
     add_executable(test_chain tests/test_chain.c src/chips/mt7921_chain.c src/io.c)
     target_compile_features(test_chain PRIVATE c_std_11)
     target_compile_definitions(test_chain PRIVATE _POSIX_C_SOURCE=200809L)
