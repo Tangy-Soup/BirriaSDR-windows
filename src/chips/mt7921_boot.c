@@ -292,12 +292,15 @@ static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
     dev->stats.stage = BIRRIASDR_STAGE_GAIN;
     BS_TRY(mt_apply_gain(dev));
     /* USB aggregation: enable<<21 | code<<8 | timeout, then the packet limit.
-     * Default is the measured 32:100:30. BIRRIASDR_AGG (1..255, Windows
-     * diagnostic) selects another code for T2-style A/B arms: the ot0tot
-     * fork's native profile pairs code 232 with 256 KiB host reads
-     * (BIRRIASDR_XFER) to cut the completion rate at 80 MSps. */
+     * Defaults are measured: 32:100:30 at 20/40 MSps, and 232 at 80 MSps on
+     * Windows (T2-lite round, 2026-10-30: code 32 short-terminates ~9,700
+     * completions/s which overrun the device every ~85 ms; code 232 packs
+     * ~8x more per completion and streamed 0 gaps over 10+ s). BIRRIASDR_AGG
+     * (1..255, Windows) overrides either default for A/B arms. */
     unsigned aggregate = 32u;
 #ifdef _WIN32
+    if (dev->rate == MT_RATE_80)
+        aggregate = 232u;
     {
         const char *text = getenv("BIRRIASDR_AGG");
         if (text && *text) {
