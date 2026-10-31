@@ -59,15 +59,20 @@ add_executable(birria_rx examples/birria_rx.c)
 target_link_libraries(birria_rx PRIVATE birriasdr Threads::Threads)
 target_include_directories(birria_rx PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src) # platform.h pthread shim
 target_compile_definitions(birria_rx PRIVATE _POSIX_C_SOURCE=200809L)
+add_executable(birria_ble examples/birria_ble.c)
+target_include_directories(birria_ble PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src) # platform.h pthread shim
+target_compile_definitions(birria_ble PRIVATE _POSIX_C_SOURCE=200809L)
+target_link_libraries(birria_ble PRIVATE birriasdr Threads::Threads)
 if(NOT WIN32)
-    # BLE collection uses POSIX resource/statvfs interfaces; port before enabling.
-    add_executable(birria_ble examples/birria_ble.c)
-    target_link_libraries(birria_ble PRIVATE birriasdr Threads::Threads m)
-    target_compile_definitions(birria_ble PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
-    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-        # The FIR and discriminator loops only vectorize with reassociation.
-        target_compile_options(birria_ble PRIVATE -O3 -ffast-math)
-    endif()
+    target_link_libraries(birria_ble PRIVATE m)
+    target_compile_definitions(birria_ble PRIVATE _DEFAULT_SOURCE)
+else()
+    # getrusage shim: process CPU/peak-RSS from the process API.
+    target_link_libraries(birria_ble PRIVATE psapi)
+endif()
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    # The FIR and discriminator loops only vectorize with reassociation.
+    target_compile_options(birria_ble PRIVATE -O3 -ffast-math)
 endif()
 if(WIN32)
     # Stage the pinned runtime next to the executables so the import library
@@ -202,7 +207,7 @@ file(RELATIVE_PATH BIRRIA_PC_TO_PREFIX "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" 
 file(RELATIVE_PATH BIRRIA_PC_TO_INCLUDE "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig" "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
 configure_file(birriasdr.pc.in birriasdr.pc @ONLY)
 if(WIN32)
-    install(TARGETS birriasdr birria_rx
+    install(TARGETS birriasdr birria_rx birria_ble
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

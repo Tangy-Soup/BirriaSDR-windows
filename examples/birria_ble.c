@@ -17,17 +17,86 @@
  * the worker falls behind, whole blocks are dropped and counted, never stalled.
  */
 #include "birriasdr.h"
+#include "platform.h" /* pthread subset: real pthreads on POSIX, the shim on Windows */
 #include <errno.h>
 #include <math.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/statvfs.h>
-#include <time.h>
+#else
+#include <fcntl.h>
+#include <io.h>
+#include <psapi.h>
+#include <sys/stat.h>
+#endif
+
+#ifdef _WIN32
+/* POSIX getrusage subset used here: user/system CPU and peak RSS, from the
+ * process API. Field names and units match so both call sites stay shared. */
+#define RUSAGE_SELF 0
+struct rusage {
+    struct { long tv_sec, tv_usec; } ru_utime, ru_stime;
+    long ru_maxrss; /* KB, as POSIX reports */
+};
+static void getrusage(int who, struct rusage *ru)
+{
+    (void)who;
+    FILETIME create, exit, kernel, user;
+    ULARGE_INTEGER k, u;
+    if (GetProcessTimes(GetCurrentProcess(), &create, &exit, &kernel, &user)) {
+        u.LowPart = user.dwLowDateTime; u.HighPart = user.dwHighDateTime;
+        k.LowPart = kernel.dwLowDateTime; k.HighPart = kernel.dwHighDateTime;
+        ru->ru_utime.tv_sec = (long)(u.QuadPart / 10000000);
+        ru->ru_utime.tv_usec = (long)(u.QuadPart % 10000000) / 10;
+        ru->ru_stime.tv_sec = (long)(k.QuadPart / 10000000);
+        ru->ru_stime.tv_usec = (long)(k.QuadPart % 10000000) / 10;
+    }
+    PROCESS_MEMORY_COUNTERS pmc;
+    memset(&pmc, 0, sizeof(pmc));
+    pmc.cb = sizeof(pmc);
+    ru->ru_maxrss = GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))
+                        ? (long)(pmc.PeakWorkingSetSize / 1024) : 0;
+}
+
+/* fopen's exclusive-create 'x' mode is C11/glibc; msvcrt's fopen rejects it
+ * (same finding as the recorder). Windows uses the OS flags directly.
+ */
+static FILE *open_exclusive_write(const char *path)
+{
+    int fd = _open(path, _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+    return fd < 0 ? NULL : _fdopen(fd, "wb");
+}
+
+/* Self-contained strtok_r: independent of which MSVCRT declarations the
+ * feature macros expose. */
+static char *ble_strtok_r(char *str, const char *delim, char **save)
+{
+    char *cursor = str ? str : *save;
+    if (!cursor)
+        return NULL;
+    cursor += strspn(cursor, delim);
+    if (!*cursor) {
+        *save = cursor;
+        return NULL;
+    }
+    char *token = cursor;
+    cursor = strpbrk(cursor, delim);
+    if (cursor) {
+        *cursor = 0;
+        *save = cursor + 1;
+    } else {
+        *save = token + strlen(token); /* token is non-empty here; point at its NUL */
+    }
+    return token;
+}
+#define strtok_r ble_strtok_r
+#endif
 
 #define OUT_RATE 4000000u   /* demodulator rate: 4 samples per 1 Msym/s symbol */
 #define MID_RATE 8000000u   /* after the CIC-shaped first stage */
@@ -799,7 +868,7 @@ static int compare_devices(const void *a, const void *b)
 
 static int write_summary(struct collector *c, const char *path, double wall_seconds, int result)
 {
-    FILE *f = fopen(path, "wx");
+    FILE *f = open_exclusive_write(path);
     struct rusage ru;
     if (!f)
         return -1;
@@ -896,7 +965,11 @@ static FILE *open_output(const char *prefix, const char *suffix, char *path, siz
 {
     if (snprintf(path, size, "%s%s", prefix, suffix) >= (int)size)
         return NULL;
+#ifdef _WIN32
+    FILE *f = open_exclusive_write(path);
+#else
     FILE *f = fopen(path, "wbx");
+#endif
     if (f)
         setvbuf(f, NULL, _IOFBF, 1 << 20);
     else
@@ -913,6 +986,7 @@ int main(int argc, char **argv)
     struct birriasdr_gain gain = {2, 8, 0};
     int argument = 1, explicit_gain = 0, pd_n8 = 0, channel_filter = 0, no_pcap = 0;
     int channels[MAX_CHANNELS], nchannels = 0, result = 0;
+    uint64_t device_index = 0;
     char path[4096], summary_path[4096];
 
     while (argument < argc && !strncmp(argv[argument], "--", 2)) {
@@ -920,6 +994,10 @@ int main(int argc, char **argv)
         int has = argument + 1 < argc;
         if (!strcmp(opt, "--input") && has) {
             input = argv[++argument];
+        } else if (!strcmp(opt, "--device") && has) {
+            /* Index into the enumeration order (birria_rx --list). Two units
+             * share this VID:PID; index 0 may be another host's adapter. */
+            if (parse_number(argv[++argument], &device_index) || device_index > UINT32_MAX) return 1;
         } else if (!strcmp(opt, "--frequency") && has) {
             if (parse_number(argv[++argument], &frequency)) return 1;
         } else if (!strcmp(opt, "--rate") && has) {
@@ -965,7 +1043,7 @@ int main(int argc, char **argv)
     }
     if (argc - argument != 1) {
         fprintf(stderr,
-                "Usage: %s [--frequency Hz] [--rate 40000000|80000000] [--channels 37,38,39] [--seconds N]\n"
+                "Usage: %s [--device N] [--frequency Hz] [--rate 40000000|80000000] [--channels 37,38,39] [--seconds N]\n"
                 "          [--gain LNA FILTER DIGITAL] [--pd-n8] [--channel-filter] [--max-bytes N]\n"
                 "          [--aa-errors 0..4] [--no-pcap] [--input capture.cs16|-] output-prefix\n"
                 "Writes output-prefix.jsonl, .pcap and .summary.json. Defaults: 2414 MHz, 40 MSps\n"
@@ -1001,14 +1079,24 @@ int main(int argc, char **argv)
     if (!c.devices)
         return 1;
 
-    struct statvfs vfs;
     char dir[4096];
     snprintf(dir, sizeof(dir), "%s", prefix);
+#ifdef _WIN32
+    ULARGE_INTEGER avail_bytes;
+    char *cut = strrchr(dir, '/'), *bslash = strrchr(dir, '\\');
+    if (bslash && (!cut || bslash > cut)) cut = bslash;
+    if (cut) *cut = 0; else strcpy(dir, ".");
+    if (GetDiskFreeSpaceExA(dir, &avail_bytes, NULL, NULL) && avail_bytes.QuadPart < max_bytes)
+        fprintf(stderr, "Note: %.1f GB free here, below the %.1f GB cap\n",
+                (double)avail_bytes.QuadPart / 1e9, max_bytes / 1e9);
+#else
+    struct statvfs vfs;
     char *slash = strrchr(dir, '/');
     if (slash) *slash = 0; else strcpy(dir, ".");
     if (!statvfs(dir, &vfs) && (uint64_t)vfs.f_bavail * vfs.f_frsize < max_bytes)
         fprintf(stderr, "Note: %.1f GB free here, below the %.1f GB cap (under WSL, check the host drive too)\n",
                 (double)vfs.f_bavail * vfs.f_frsize / 1e9, max_bytes / 1e9);
+#endif
     if (max_bytes <= SUMMARY_RESERVE) {
         fprintf(stderr, "--max-bytes must exceed the %u-byte summary reserve\n", SUMMARY_RESERVE);
         return 1;
@@ -1044,6 +1132,10 @@ int main(int argc, char **argv)
     signal(SIGTERM, on_signal);
 
     if (input) {
+#ifdef _WIN32
+        if (!strcmp(input, "-"))
+            _setmode(_fileno(stdin), _O_BINARY); /* no CRT text translation on I/Q */
+#endif
         FILE *in = strcmp(input, "-") ? fopen(input, "rb") : stdin;
         int16_t *iq = malloc(SLOT_SAMPLES * 4);
         if (!in || !iq) {
@@ -1078,7 +1170,7 @@ int main(int argc, char **argv)
         c.limit = seconds * rate;
         /* --pd-n8 settling: discard ~600 ms, as birria_rx does. */
         c.skip = pd_n8 ? (uint64_t)11719 * 2048 * (rate / 40000000) : 0;
-        result = birriasdr_open(&dev, 0);
+        result = birriasdr_open(&dev, (uint32_t)device_index);
         if (result < 0) {
             fprintf(stderr, "Open: %s\n", birriasdr_strerror(result));
             return 1;
