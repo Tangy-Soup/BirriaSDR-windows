@@ -294,6 +294,9 @@ int bs_usb_discover(uint32_t index, struct birriasdr_device_info *info, birriasd
      * Reject before initializing or opening USB rather than risking the device.
      */
     const struct libusb_version *version = libusb_get_version();
+    if (getenv("BIRRIASDR_TRACE_FIND"))
+        fprintf(stderr, "TRACE find: enter idx=%u version=%d.%d.%d\n", index,
+                version->major, version->minor, version->micro);
     if (version->major == 1 && version->minor == 0 && version->micro < 30)
         return BIRRIASDR_ERROR_UNSUPPORTED;
 #endif
@@ -302,11 +305,15 @@ int bs_usb_discover(uint32_t index, struct birriasdr_device_info *info, birriasd
     ssize_t count;
     uint32_t found = 0;
     int result = libusb_init(&context);
+    if (getenv("BIRRIASDR_TRACE_FIND"))
+        fprintf(stderr, "TRACE find: libusb_init=%d\n", result);
     if (result < 0)
         return bs_usb_error(result);
     if (dev)
         dev->usb = context;
     count = libusb_get_device_list(context, &list);
+    if (getenv("BIRRIASDR_TRACE_FIND"))
+        fprintf(stderr, "TRACE find: device_list=%zd\n", (ssize_t)count);
     result = count < 0 ? bs_usb_error((int)count) : BIRRIASDR_ERROR_NO_DEVICE;
     for (ssize_t i = 0; i < count; ++i) {
         struct libusb_device_descriptor descriptor;
@@ -336,6 +343,8 @@ int bs_usb_discover(uint32_t index, struct birriasdr_device_info *info, birriasd
         libusb_free_device_list(list, 1);
     if (!dev)
         libusb_exit(context);
+    if (getenv("BIRRIASDR_TRACE_FIND"))
+        fprintf(stderr, "TRACE find: exit result=%d found=%u\n", result, found);
     return result;
 }
 

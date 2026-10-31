@@ -16,6 +16,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <optional>
@@ -102,11 +103,18 @@ std::vector<std::pair<uint32_t, birriasdr_device_info>> matching_devices(const S
     int count = birriasdr_get_device_count();
     if (count < 0)
         return found;
+    /* BIRRIASDR_SOAPY_ALLOW=<usb location> hides every other adapter from the
+     * host application. SDR++ 1.0.4 auto-opens the first enumerated device in
+     * its constructor, so on a two-adapter host the hidden entry protects the
+     * adapter another host owns from an unwanted open. */
+    const char *allow = getenv("BIRRIASDR_SOAPY_ALLOW");
     for (int i = 0; i < count; ++i) {
         birriasdr_device_info info;
         if (birriasdr_get_device_info((uint32_t)i, &info) || !(info.capabilities & BIRRIASDR_CAP_RX))
             continue;
         if (args.count("usb") && args.at("usb") != usb_location(info))
+            continue;
+        if (allow && *allow && usb_location(info) != allow)
             continue;
         if (!args.count("usb") && args.count("index") && args.at("index") != std::to_string(i))
             continue;
