@@ -292,14 +292,14 @@ static int prepare_once(birriasdr_dev_t *dev, uint32_t packets)
     dev->stats.stage = BIRRIASDR_STAGE_GAIN;
     BS_TRY(mt_apply_gain(dev));
     /* USB aggregation: enable<<21 | code<<8 | timeout, then the packet limit.
-     * Defaults are measured: 32:100:30 at 20/40 MSps, and 232 at 80 MSps on
-     * Windows (T2-lite round, 2026-10-30: code 32 short-terminates ~9,700
-     * completions/s which overrun the device every ~85 ms; code 232 packs
-     * ~8x more per completion and streamed 0 gaps over 10+ s). BIRRIASDR_AGG
-     * (1..255, Windows) overrides either default for A/B arms. */
+     * Defaults are measured: 32:100:30 at 20/40 MSps, and 232 whenever the
+     * device aggregates to 80 MSps on Windows — the native 80 MSps rate, or
+     * both chains interleaved at 40 MSps each (chain smoke 2026-10-30: with
+     * code 32 that aggregate overrun the device with the same ~85 ms
+     * periodic stall). BIRRIASDR_AGG (1..255, Windows) overrides for A/Bs. */
     unsigned aggregate = 32u;
 #ifdef _WIN32
-    if (dev->rate == MT_RATE_80)
+    if (dev->rate == MT_RATE_80 || atomic_load(&dev->receive_chain) == BIRRIASDR_CHAIN_BOTH)
         aggregate = 232u;
     {
         const char *text = getenv("BIRRIASDR_AGG");
