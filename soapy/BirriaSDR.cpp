@@ -10,6 +10,12 @@
 #include <SoapySDR/Formats.hpp>
 #include <SoapySDR/Logger.hpp>
 #include <SoapySDR/Registry.hpp>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -124,6 +130,33 @@ std::vector<std::pair<uint32_t, birriasdr_device_info>> matching_devices(const S
 }
 
 class BirriaSDRDevice;
+
+/* SDRangel 8.0.0 killed the whole process over an uncaught
+ * "BirriaSDR: unknown setting " (empty key) that arrived through an unguarded
+ * host path. Soapy allows throwing for unknown keys, but one fragile host is
+ * reason enough to be tolerant: log a warning with the caller's stack
+ * (module+offset; resolve against the host's PDBs) and carry on. */
+static void log_unknown_setting(const char *verb, const std::string &key)
+{
+    std::string msg = std::string("BirriaSDR: ignoring unknown setting key '") + key + "' (" + verb + ")";
+#ifdef _WIN32
+    void *frames[16];
+    USHORT count = CaptureStackBackTrace(0, 16, frames, nullptr);
+    for (USHORT i = 0; i < count; i++) {
+        HMODULE module = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCWSTR)frames[i], &module);
+        char name[MAX_PATH] = "?";
+        if (module)
+            GetModuleFileNameA(module, name, sizeof name);
+        char frame[512];
+        std::snprintf(frame, sizeof frame, "\n  [%u] %p %s+%llx", (unsigned)i, frames[i], name,
+                      module ? (unsigned long long)((char *)frames[i] - (char *)module) : 0ULL);
+        msg += frame;
+    }
+#endif
+    SoapySDR::log(SOAPY_SDR_WARNING, msg);
+}
 
 /* SDR++ exits without deleting its source, so a running stream never reaches
  * the library's cleanup, which restores gain overrides that a WFSYS reset does
@@ -749,7 +782,7 @@ public:
         } else if (key == "max_restarts") {
             max_restarts_ = (unsigned)std::stoul(value);
         } else {
-            throw std::runtime_error("BirriaSDR: unknown setting " + key);
+            log_unknown_setting("writeSetting", key);
         }
     }
 
@@ -765,7 +798,8 @@ public:
         }
         if (key == "max_restarts")
             return std::to_string(max_restarts_);
-        throw std::runtime_error("BirriaSDR: unknown setting " + key);
+        log_unknown_setting("readSetting", key);
+        return "";
     }
 
 private:
