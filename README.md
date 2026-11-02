@@ -91,7 +91,7 @@ For more detail, see:
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
 | Firmware | Original 1,664-byte RAM program. No vendor firmware and nothing flashed |
-| Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
+| Host platforms | Linux, tested on a Raspberry Pi 5; macOS, tested on an Apple Silicon Mac; and Windows 11 natively (libusbK driver; see [PORT_WINDOWS.md](PORT_WINDOWS.md)) |
 
 ## Proof of concept
 
