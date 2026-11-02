@@ -14,6 +14,7 @@
 using birria_soapy::Band;
 using birria_soapy::collect_bands;
 using birria_soapy::in_band;
+using birria_soapy::spanning_band;
 
 /* Answers like the library: listed bands, UNSUPPORTED where marked, then INVALID. */
 struct Fake {
@@ -61,6 +62,13 @@ int main()
     CHECK(in_band(bands, std::numeric_limits<double>::quiet_NaN()) == 0);
     CHECK(in_band(bands, std::numeric_limits<double>::infinity()) == 0);
     CHECK(in_band(bands, 1e300) == 0);
+
+    /* The merged span covers both bands (gap included) for single-interval
+     * hosts; validation above still rejects the gap. */
+    const Band span = spanning_band(bands);
+    CHECK(span.minimum == low.minimum && span.maximum == high.maximum);
+    CHECK(spanning_band(std::vector<Band>{low}).maximum == low.maximum);
+    CHECK(spanning_band({}).minimum == 0 && spanning_band({}).maximum == 0);
 
     /* A band this board cannot reach is skipped, not the end of the list. */
     Fake capped{{low, high}, {0, BIRRIASDR_ERROR_UNSUPPORTED}};

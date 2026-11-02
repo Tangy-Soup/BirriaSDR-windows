@@ -35,6 +35,24 @@ template <typename Get> std::vector<Band> collect_bands(Get get)
     return bands;
 }
 
+/* The single band spanning every listed band, for hosts that clamp to one
+ * interval (SDRangel's frequency dial asks for a single range and would never
+ * leave the first band otherwise). {0, 0} when there is no band; callers
+ * check for that first. Ascending order is collect_bands()'s contract; the
+ * scan keeps the answer right even if a backend breaks it.
+ */
+inline Band spanning_band(const std::vector<Band> &bands)
+{
+    Band span{0, 0};
+    for (const Band &band : bands) {
+        if (span.minimum == 0 || band.minimum < span.minimum)
+            span.minimum = band.minimum;
+        if (band.maximum > span.maximum)
+            span.maximum = band.maximum;
+    }
+    return span;
+}
+
 /* The request rounded to whole hertz if it lies inside a band, else 0.
  * Anything above 1 PHz is rejected before rounding, so llround cannot overflow.
  */

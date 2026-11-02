@@ -464,8 +464,8 @@ public:
     /* Frequency: one tuner shared by both chains, live retuning supported. */
     std::vector<std::string> listFrequencies(const int, const size_t) const override { return {"RF"}; }
 
-    /* One range per contiguous band (2.4 and 5 GHz on MT7921), so applications
-     * see the gap between them instead of one interval spanning it.
+    /* One band per contiguous span the tuner accepts (2.4 and 5 GHz on MT7921);
+     * setFrequency() validates against this real list, not the merged report.
      */
     std::vector<birria_soapy::Band> bands() const
     {
@@ -474,11 +474,19 @@ public:
         });
     }
 
+    /* One merged range across every band: hosts that ask for a single interval
+     * (SDRangel's frequency dial) clamp to the first range otherwise and can
+     * never dial 5 GHz. A dial into the gap between bands still leaves the
+     * tuner unchanged (setFrequency below).
+     */
     SoapySDR::RangeList getFrequencyRange(const int, const size_t) const override
     {
         SoapySDR::RangeList ranges;
-        for (const birria_soapy::Band &band : bands())
-            ranges.emplace_back((double)band.minimum, (double)band.maximum);
+        const std::vector<birria_soapy::Band> known = bands();
+        if (!known.empty()) {
+            const birria_soapy::Band span = birria_soapy::spanning_band(known);
+            ranges.emplace_back((double)span.minimum, (double)span.maximum);
+        }
         return ranges;
     }
 
