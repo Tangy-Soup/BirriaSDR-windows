@@ -1,0 +1,4 @@
+# Prebuilt payload stays out of git (user decision 2026-11-02): the installer
+# and build-module-msvc.cmd work from freshly built artifacts. Drop module +
+# libbirriasdr.dll + libwinpthread-1.dll here only for local install tests.
+/dist/
