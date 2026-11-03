@@ -218,7 +218,10 @@ connected.
 Follow [packaging/sdrangel/README.md](../packaging/sdrangel/README.md): run
 the ABI-checking installer against your SDRangel bundle, then always start
 SDRangel with the generated `run-sdrangel.cmd`. Highlights and hard-won
-quirks are documented there; the short version:
+quirks are documented there; the short version (if you rebuild the module
+yourself, note that `build-module-msvc.cmd` expects the UCRT64 library build
+at `build-ucrt64\libbirriasdr.dll` — configure that build with
+`-B build-ucrt64`):
 
 - Start only via `run-sdrangel.cmd` (it passes `--soapy`, without which
   SDRangel never loads Soapy plugins, and sets the DLL/module paths).
