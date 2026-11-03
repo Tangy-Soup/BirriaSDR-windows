@@ -1,5 +1,37 @@
 # BirriaSDR
 
+> [!NOTE]
+>
+> **This is a research fork** of [luigifcruz/BirriaSDR](https://github.com/luigifcruz/BirriaSDR),
+> based on upstream `cbe0575`. It was developed on an
+> [EDUP EP-AX1672](https://www.szedup.com/usb-adaptersBr3/EP1672.html)
+> (AX3000 Wi-Fi 6E, MediaTek MT7921AU, USB ID `0e8d:7961`) under WSL2 and adds,
+> mostly as opt-in options:
+>
+> - a SoapySDR module (`-DBIRRIASDR_SOAPY=ON`, `driver=birriasdr`);
+> - packet-detect suppression, which removes the exact-zero sample blanking;
+> - chain 1 and both-chain capture, the post-filter channel tap, 20 and 80 MSps,
+>   and a per-chain gain table in dB;
+> - `birria_ble`, a streaming BLE advertising collector, and `birria_rx --recover`;
+> - Python Wi-Fi and BLE decoders in [tools/decoders](tools/decoders/README.md).
+>
+> The measurements behind these, including what didn't work, are in
+> [docs/findings.md](docs/findings.md). The adapter's USB 3 self-noise and the
+> foil shield that removed most of it are covered under
+> [antenna placement and shielding](#antenna-placement-and-shielding).
+>
+> Upstream has moved on since `cbe0575`. Its `main` at `8ddab14` (30 October
+> 2026) has its own SoapySDR module, a UDP sender and 10, 20 and 80 MSps, each
+> built differently from the versions here. This fork is not rebased onto it.
+> The differences are listed under
+> [fork and upstream compared](#fork-and-upstream-compared).
+>
+> Upstream's own testing, described below, is on a COMFAST `3574:6211` dongle
+> with the same MT7961 and MT7972 dies. This fork's additions were tested only
+> on the EP-AX1672; where this README or [docs/mt7921.md](docs/mt7921.md) says
+> "the EDUP board", it means that adapter. The rest of this README is
+> upstream's, updated for the additions.
+
 Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
 **14-bit I/Q at 40 MSps complex**.
 
@@ -49,8 +81,9 @@ volatile and disappears when the dongle loses power. The device program's
 assembly source lives in [`firmware/iq_stream.S`](firmware/iq_stream.S), and the
 library embeds its assembled image.
 
-The tested hardware is the **COMFAST MT7961/MT7921AU dongle (`3574:6211`)**,
-which pairs an MT7961 digital die with an MT7972 analog die. By default the
+Upstream's tested hardware is the **COMFAST MT7961/MT7921AU dongle
+(`3574:6211`)**; this fork's additions were tested on an **EDUP EP-AX1672**
+(`0e8d:7961`). Both pair an MT7961 digital die with an MT7972 analog die. By default the
 receiver is centered on Wi-Fi channel 6 (nominally 2437 MHz) and uses receive
 chain 0 at 40 million complex samples per second. The library can retune
 anywhere in the 2156 to 2610 MHz and 4500 to 6200 MHz bands, even while
@@ -74,7 +107,7 @@ For more detail, see:
 | Parameter | Current value |
 | --- | --- |
 | Hardware | COMFAST dongle `3574:6211`, or a board with MediaTek's generic ID `0e8d:7961`, with an MT7961 digital die and an MT7972 analog die |
-| Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5250 to 5815 MHz |
+| Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5180 to 5815 MHz |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
 | Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. Experimental: 80 MSps (`--rate 80000000`), single chain and 2.4 GHz only, 320 MB/s over USB, with the BW80 filter profile. On the EDUP board over usbipd it gave flat-to-±30 MHz captures that decode channels 1–11 at once; 1 s finite captures usually succeed, and continuous reads see about one recovered gap every 20–30 s with the default 192 queued USB transfers. The sample clock and LO share one reference within 0.5 ppm (measured against Wi-Fi beacon timestamps), so 40 MSps is exact up to the crystal's tolerance |
 | Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz. Opt-in `--channel-filter` captures after the PHY's digital channel filter, which follows the profile: at 20 MHz it lowered the floor 10–15 MHz off centre by about 13 dB. See [channel filter](docs/mt7921.md#channel-filter) |
@@ -82,7 +115,7 @@ For more detail, see:
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
 | Receive channels | Chain 0 by default. Opt-in research setting (`--chain 1` or `--chain both`) for the second receiver alone or both chains interleaved. See [receive-chain selection](docs/mt7921.md#receive-chain-selection) |
 | Transmit | None, receive only |
-| Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 and digital 0 to 12 on each streamed chain, or an overall gain from a measured table of relative dB (0 to 59.4 dB on chain 0). The table was measured at 2437 MHz on the EDUP board and has no absolute dBm reference; 5 GHz needs LNA 4 or 5 and is not covered by it. See [gain in dB](docs/mt7921.md#gain-in-db) |
+| Gain | Raw codes for LNA 0 to 5, filter stage 0 to 8 (0 to 15 at 5 GHz) and digital 0 to 12 on each streamed chain, or an overall gain from a measured table of relative dB (0 to 59.4 dB on chain 0 at 2437 MHz, and at 5 GHz 0 to 59.2 dB on chain 0, 0 to 55.1 dB on chain 1 and 0 to 47.2 dB on both chains). The tables were measured on the EDUP board and have no absolute dBm reference. At 5 GHz, weak signals need LNA 5 and a filter-stage code of 11 to 14, but strong APs clip at the top codes. See [gain in dB](docs/mt7921.md#gain-in-db) and [5 GHz filter-stage codes](docs/mt7921.md#5-ghz-filter-stage-codes) |
 | Live gain changes | Supported without restarting capture, with a brief settling transient |
 | Automatic gain | Manual overrides can be released. Full AGC control is not implemented |
 | Capture blanking | The PHY packet detector blanks short zero runs into the capture. Opt-in packet-detect suppression (`--pd-n8`) removes them after about 250 ms of settling. Research setting, see [packet-detect suppression](docs/mt7921.md#packet-detect-suppression) |
@@ -91,7 +124,71 @@ For more detail, see:
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
 | Firmware | Original 1,664-byte RAM program. No vendor firmware and nothing flashed |
-| Host platforms | Linux, tested on a Raspberry Pi 5; macOS, tested on an Apple Silicon Mac; and Windows 11 natively (libusbK driver; see [PORT_WINDOWS.md](PORT_WINDOWS.md)) |
+| Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
+
+### Fork and upstream compared
+
+Upstream merged its own versions of several of this fork's additions after the
+fork was based. This table compares the fork's `soapysdr-module` branch with
+upstream `main` at `8ddab14`, as each project documents it:
+
+| | This fork | Upstream `main` |
+| --- | --- | --- |
+| Base | Upstream `cbe0575` (25 October 2026), not rebased | `8ddab14` (30 October 2026) |
+| Sample rates | 40 MSps, plus 20 MSps from a 2:1 halfband filter on the host, flat to ±8.5 MHz, with unchanged USB traffic. The 80 MSps rate is experimental and 2.4 GHz only | 10, 20, 40 and 80 MSps from the device. At 10 and 20 MSps the chip packs samples from a faster tap, and 10 MSps halves the USB traffic |
+| Receive chains | Chain 0, chain 1, or both interleaved | Chain 0 |
+| Gain | Raw codes, with filter stage 0 to 15 at 5 GHz, or an overall gain from measured relative dB tables | Raw codes, filter stage 0 to 8. Not in dB |
+| Capture blanking | `--pd-n8` removes the zero runs | Not documented |
+| Channel-filtered tap | `--channel-filter` | No. The 10 MSps rate uses a narrower digital filter |
+| SoapySDR module | `driver=birriasdr`, opt-in build flag. Sample-count timestamps, 20 or 40 MHz bandwidth, and settings for blanking suppression, the channel-filtered tap and the restart budget | `driver=birria`, built whenever SoapySDR is installed. All four native rates, with rate changes while streaming. No timestamps or bandwidth control |
+| Network output | None | `birria_udp`, raw CS16 over UDP |
+| Other tools | `birria_ble`, `birria_rx --recover`, and the Python Wi-Fi and BLE decoders | None |
+| Tested hardware | EDUP EP-AX1672 (`0e8d:7961`) under WSL2 and usbipd | COMFAST `3574:6211` on a Raspberry Pi 5 and macOS, and a generic-ID board |
+
+The two SoapySDR modules have different driver keys and file names, but both
+projects install their library as `libbirriasdr`. Install them in separate
+prefixes, and point `SOAPY_SDR_PLUGIN_PATH` at the module you want. Only one
+can stream from a dongle at a time.
+
+The two ways of making 20 MSps were compared on the EDUP board, on
+30 October 2026, with upstream `8ddab14`, pull request #14 and this fork's
+halfband captured back to back. In upstream's packed capture, a signal 12 MHz
+off-centre still folded in at −6 to −13 dB, the same as pull request #14
+before upstream's later filter changes. The halfband showed no alias. See
+[findings §8](docs/findings.md#8-sample-rates-and-the-transport).
+
+### Antenna placement and shielding
+
+On the EDUP board, the adapter's own USB 3 link was the largest noise source at
+2.4 GHz. It couples into antenna A, the chain-0 port. Two changes helped, both
+measured in [findings §4](docs/findings.md#4-antenna-placement-usb-3-self-noise-and-shielding):
+
+- **Antenna A straight out.** Keep the stock antenna straight out from the
+  side port, with no elbow bend and no pigtail. To aim it, turn the whole
+  adapter. With the antenna bent alongside the adapter, the floor rose from
+  about −50 to −42 dBFS, and blanking events rose from 3.5 to 11 per ms.
+- **Shield the adapter.** The adapter body and the USB extension cable's
+  connector were wrapped in kitchen aluminum foil, folded over for strength,
+  and finished with copper tape. The shield is grounded to the USB connector
+  shells and to the RP-SMA hex base, and the antennas stay outside it.
+
+The same 28-capture scan was run before and after shielding. It used chain 0,
+manual gain, plain 2 s captures and no register writes:
+
+| Channel | Gain | Floor before | Floor after | Change |
+| --- | --- | --- | --- | --- |
+| 2.4 GHz ch 1 | LNA 3 | −44.3 dBFS | −48.0 dBFS | −3.7 dB |
+| 2.4 GHz ch 6 | LNA 3 | −43.7 dBFS | −49.4 dBFS | −5.7 dB |
+| 2.4 GHz ch 11 | LNA 3 | −42.6 dBFS | −49.6 dBFS | −7.0 dB |
+| 5 GHz, 25 channels from 36 to 165 | LNA 5 | −52.0 to −52.6 dBFS | the same | median +0.02 dB |
+
+At 2.4 GHz the shield removed most of the USB noise. The floor moved toward the
+−53.7 dBFS measured with the antenna port open. At 5 GHz the floor was already
+the receiver's own, so the shield had nothing to remove there. No narrowband
+spur rose more than 3 dB over the median bin on any channel. Decoded frame
+counts at 2.4 GHz follow traffic that changes from minute to minute, so they
+don't measure the shield; the floors do. These numbers come from one run, on
+one adapter, in one room.
 
 ## Proof of concept
 
@@ -147,8 +244,10 @@ For Wi-Fi discovery, a narrower profile can reduce neighboring-channel energy:
 ./build/birria_rx --frequency 2462000000 --bandwidth 20000000 --gain 3 8 0 ch11.cs16 20000000
 ```
 
-`--gain LNA FILTER DIGITAL` selects manual raw codes, including zero, with ranges
-0 to 5, 0 to 8 and 0 to 12. These are raw indices, not dB values. The narrower filter helped
+The `--gain LNA FILTER DIGITAL` option selects manual raw codes, including zero, with ranges
+0 to 5, 0 to 8 (0 to 15 at 5 GHz) and 0 to 12. These are raw
+indices, not dB values. At 5 GHz, `--gain 5 14 0` gave about 7 dB more SNR on
+weak beacons than `--gain 5 8 0`. The narrower filter helped
 decode additional AP beacons on the local EDUP MT7921AU board; this does not
 qualify every supported board or guarantee a particular rejection response.
 
@@ -462,8 +561,8 @@ directory.
 | Frequency | One `RF` component, retuned live, including across bands. `getFrequencyRange` lists each band separately (2156 or 2190 to 2610 MHz, and 4500 to 6200 MHz on MT7921). A request outside every band, including the gap between them, is logged and leaves the tuner where it was. 80 MSps is refused at 5 GHz |
 | Bandwidth | 20 or 40 MHz, rounded to the nearer one. A change during a stream applies at the next stream start |
 | Gain mode | Automatic releases the manual overrides; manual applies the cached codes |
-| Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
-| Overall gain | The library's measured relative dB table, from 0 to 59.4 dB on chain 0. A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode |
+| Gain elements | `LNA` 0 to 5, `LPF` 0 to 8 (0 to 15 at 5 GHz, following the tuned band) and `DIG` 0 to 12. These are raw indices, even where an application labels them dB. Codes set in automatic mode are kept for the next manual mode |
+| Overall gain | The library's measured relative dB table, from 0 to 59.4 dB on chain 0 (0 to 59.2 dB at 5 GHz). A value picks the nearest step's codes, and a value set in automatic mode applies at the next manual mode |
 | Antenna | `RX` only |
 | Settings | `packet_detect_suppression` (applies at the next stream start; discard about the first 250 ms), `channel_filter` (capture after the digital channel filter; applies at the next stream start) and `max_restarts` (recovery budget, default 16) |
 | Timestamps | `readStream` sets `SOAPY_SDR_HAS_TIME`. `timeNs` counts samples since activation at the nominal rate; across a gap it adds the lost interval measured on the host clock (about 1 ms uncertainty). It labels samples; it is not a hardware clock |
@@ -547,5 +646,6 @@ BirriaSDR builds on open-source drivers and earlier research into using Wi-Fi ha
 - The upstream [mt76](https://github.com/openwrt/mt76) Linux driver and its contributors, which the userspace work builds on.
 - The [W1700K SDR](https://github.com/h0m3us3r/w1700k-sdr) project by h0m3us3r, related work that turns Wi-Fi hardware into a wideband SDR and documents capture registers and sample-clock controls.
 - The [MtkICAPtool](https://github.com/MtkWifiRev/MtkICAPtool) project by MtkWifiRev, earlier work that exposed the chipset’s internal I/Q capture capabilities.
+- The [Mtk79ICAP](https://github.com/MtkWifiRev/Mtk79ICAP) project by MtkWifiRev, whose vendor-firmware MT7921 work supplied the BW80 recipe, gain-hold layout and tap interpretation this fork re-implements, and the Soapy test scripts it adapts.
 
 Third-party code keeps its original licenses and copyright notices.
