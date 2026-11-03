@@ -1,21 +1,42 @@
-# BirriaSDR
+# BirriaSDR for Windows
 
 > [!NOTE]
 >
-> **This is a research fork** of [luigifcruz/BirriaSDR](https://github.com/luigifcruz/BirriaSDR),
-> based on upstream `cbe0575`. It was developed on an
-> [EDUP EP-AX1672](https://www.szedup.com/usb-adaptersBr3/EP1672.html)
-> (AX3000 Wi-Fi 6E, MediaTek MT7921AU, USB ID `0e8d:7961`) under WSL2 and adds,
-> mostly as opt-in options:
+> **Native Windows port of the [BirriaSDR research fork](
+> https://github.com/Tangy-Soup/BirriaSDR-research)** (itself a fork of
+> [luigifcruz/BirriaSDR](https://github.com/luigifcruz/BirriaSDR), based on
+> upstream `cbe0575`). The whole receiver stack runs natively on
+> **Windows 10/11 x64** — no WSL2, no usbipd, no Linux drivers: the
+> `libbirriasdr` C library, the `birria_rx` recorder, the `birria_ble`
+> collector, the [SoapySDR module](#soapysdr-module) (SDRangel, SDR++) and
+> the [Python Wi-Fi and BLE decoders](tools/decoders/README.md).
 >
-> - a SoapySDR module (`-DBIRRIASDR_SOAPY=ON`, `driver=birriasdr`);
-> - packet-detect suppression, which removes the exact-zero sample blanking;
-> - chain 1 and both-chain capture, the post-filter channel tap, 20 and 80 MSps,
->   and a per-chain gain table in dB;
-> - `birria_ble`, a streaming BLE advertising collector, and `birria_rx --recover`;
-> - Python Wi-Fi and BLE decoders in [tools/decoders](tools/decoders/README.md).
+> The tested hardware is the [EDUP EP-AX1672](https://www.szedup.com/usb-adaptersBr3/EP1672.html)
+> (AX3000 Wi-Fi 6E, MediaTek MT7921AU, USB ID `0e8d:7961`). Everything was
+> validated on Windows 11 x64; Windows 10 x64 uses the same WinUSB/libusbK
+> driver model but has not been tested. New to BirriaSDR? Start with
+> [Quick start on Windows](#quick-start-on-windows) — a working SDR is a few
+> steps away, and none of them need prior BirriaSDR or SDR experience.
 >
-> The measurements behind these, including what didn't work, are in
+> On top of the research fork, this port adds:
+>
+> - a native Windows platform seam (locks, monotonic clock, RNG, USB device
+>   lock, RAW-IO transfers), building with MSYS2 MinGW-w64 (UCRT64) or
+>   VS2022/MSVC;
+> - the **driver recipe that works**: Zadig binds the adapter's `WiFi_If`
+>   interface to **libusbK** — plain WinUSB rejects a control transfer the
+>   boot needs (error 87). Steps and pitfalls: [docs/windows.md](docs/windows.md);
+> - an 80 MSps USB aggregation fix (code 232) plus a writer thread, which make
+>   80 MSps captures gap-free where the stock transport overruns;
+> - `birria_rx --device N` selection with `[bus:addr]` labels, and a
+>   `BIRRIASDR_SOAPY_ALLOW` filter so GUI hosts auto-open the right adapter
+>   on multi-adapter machines;
+> - [SDRangel 8.0 packaging](packaging/sdrangel/README.md) with an
+>   ABI-checking installer and launcher.
+>
+> The Linux/WSL2 development home of the same fork is
+> [BirriaSDR-research](https://github.com/Tangy-Soup/BirriaSDR-research); the
+> measurements behind it, including what didn't work, are in
 > [docs/findings.md](docs/findings.md). The adapter's USB 3 self-noise and the
 > foil shield that removed most of it are covered under
 > [antenna placement and shielding](#antenna-placement-and-shielding).
@@ -33,14 +54,14 @@
 > upstream's, updated for the additions.
 
 Turn a supported USB Wi-Fi dongle into an experimental SDR receiver with
-**14-bit I/Q at 40 MSps complex**.
+**14-bit I/Q at 40 MSps complex** — on Windows, natively.
 
 BirriaSDR ships as `libbirriasdr`, a C11 library with an API modeled on
 librtlsdr, together with a command-line recorder. It talks to the device from
 userspace through libusb and includes the source of its own small device
-program. Start with [Build and try](#build-and-try), or jump to the [API](#api)
-to add the receiver to an application. To see it working without building
-anything, try the rough [proof of concept](#proof-of-concept).
+program. On Windows, start with [Quick start on Windows](#quick-start-on-windows);
+the cross-platform build instructions are under [Build and try](#build-and-try),
+and the [API](#api) section shows how to add the receiver to an application.
 
 > [!IMPORTANT]
 >
@@ -50,6 +71,40 @@ anything, try the rough [proof of concept](#proof-of-concept).
 > calibrated. Use at your own risk.
 
 https://github.com/user-attachments/assets/64e9fbbd-1f16-4c7b-905c-5624b9c574b7
+
+## Quick start on Windows
+
+The full, copy-pasteable guide — with verification steps, expected output and
+troubleshooting — is [docs/windows.md](docs/windows.md). In outline:
+
+1. **Bind the driver** (once per Windows install): [Zadig](https://zadig.akeo.ie/)
+   → the adapter's `WiFi_If` interface → **libusbK**. Plain WinUSB is not
+   enough on this adapter: it rejects a control transfer the boot needs.
+2. **Install the toolchain**: [MSYS2](https://www.msys2.org/), then in the
+   UCRT64 shell
+   `pacman -S --needed mingw-w64-ucrt-x86_64-toolchain mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-libusb`
+   (add `mingw-w64-ucrt-x86_64-soapysdr` for the SoapySDR module).
+3. **Build and test**:
+   `cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBIRRIASDR_SOAPY=ON`,
+   `cmake --build build`, `ctest --test-dir build` — the suite runs without
+   hardware.
+4. **First capture**: `./build/birria_rx --list`, then record half a second
+   and decode it to a Wireshark PCAP with the Python decoders
+   ([First capture](docs/windows.md#first-capture)).
+5. **Add a GUI**: SDRangel 8.0.0 via the [prebuilt module installer](
+   packaging/sdrangel/README.md), or SDR++ 1.0.4
+   ([GUI applications](docs/windows.md#gui-applications)).
+
+A GUI without building anything at all: the
+[SDRangel packaging](packaging/sdrangel/README.md) installs a prebuilt module
+payload — grab the bundle from this repo's releases.
+
+> [!WARNING]
+>
+> Captures and their decode results (JSON, PCAP) contain real radio traffic —
+> your neighbours' SSIDs and device addresses. The repo's `.gitignore`
+> excludes `captures/`, `*.cs16` and `*.pcap` so they don't land in commits or
+> releases by accident. Think before publishing anything you recorded.
 
 ## Background
 
@@ -106,10 +161,10 @@ For more detail, see:
 
 | Parameter | Current value |
 | --- | --- |
-| Hardware | COMFAST dongle `3574:6211`, or a board with MediaTek's generic ID `0e8d:7961`, with an MT7961 digital die and an MT7972 analog die |
+| Hardware | COMFAST dongle `3574:6211`, or a board with MediaTek's generic ID `0e8d:7961`, with an MT7961 digital die and an MT7972 analog die. On Windows, tested only on the EDUP EP-AX1672 (`0e8d:7961`) |
 | Frequency tuning | 2156 to 2610 MHz, or 2190 to 2610 MHz on generic-ID boards, and 4500 to 6200 MHz, including live changes and band switches. Sensitivity is unverified; 5 GHz reception was checked from 5180 to 5815 MHz |
 | Tuning step | Nominally 28.61 Hz, using the full 20-bit fraction. Requests are in whole hertz with no Wi-Fi channel restriction. The physical response to fine steps is still unmeasured |
-| Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. Experimental: 80 MSps (`--rate 80000000`), single chain and 2.4 GHz only, 320 MB/s over USB, with the BW80 filter profile. On the EDUP board over usbipd it gave flat-to-±30 MHz captures that decode channels 1–11 at once; 1 s finite captures usually succeed, and continuous reads see about one recovered gap every 20–30 s with the default 192 queued USB transfers. The sample clock and LO share one reference within 0.5 ppm (measured against Wi-Fi beacon timestamps), so 40 MSps is exact up to the crystal's tolerance |
+| Sample rate | 40 MSps complex capture. 20 MSps output is also available through a 2:1 halfband on the host (`--rate 20000000`), flat to ±8.5 MHz; USB traffic is unchanged. Experimental: 80 MSps (`--rate 80000000`), single chain and 2.4 GHz only, 320 MB/s over USB, with the BW80 filter profile. On the EDUP board over usbipd it gave flat-to-±30 MHz captures that decode channels 1–11 at once; 1 s finite captures usually succeed, and continuous reads see about one recovered gap every 20–30 s with the default 192 queued USB transfers. On native Windows (this port), USB aggregation code 232 plus the recorder's writer thread made 80 MSps gap-free in 10 s / 3.3 GB disk runs; see [docs/windows.md](docs/windows.md#streaming-rates-on-windows). The sample clock and LO share one reference within 0.5 ppm (measured against Wi-Fi beacon timestamps), so 40 MSps is exact up to the crystal's tolerance |
 | Receive filter profiles | Nominal 20 or 40 MHz, selected while idle. Both keep 40 MSps and the same USB traffic; default is 40 MHz. Opt-in `--channel-filter` captures after the PHY's digital channel filter, which follows the profile: at 20 MHz it lowered the floor 10–15 MHz off centre by about 13 dB. See [channel filter](docs/mt7921.md#channel-filter) |
 | Sampled bandwidth | 40 MHz span with matching nominal 40 MHz analog and digital settings. See [filter characteristics](docs/mt7921.md#filtering) for rolloff and aliasing limits |
 | Sample resolution | Signed 14-bit I and Q, from −8192 to 8191 |
@@ -124,7 +179,7 @@ For more detail, see:
 | Host interface | Bulk transfers over USB 3.0 at about 161 MB/s |
 | Output format | Interleaved signed 16-bit I and Q (`cs16`). Buffers from the API are native-endian, and recorder files are little-endian |
 | Firmware | Original 1,664-byte RAM program. No vendor firmware and nothing flashed |
-| Host platforms | Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
+| Host platforms | Windows 10/11 x64 (tested on Windows 11; see [docs/windows.md](docs/windows.md)), Linux, tested on a Raspberry Pi 5, and macOS, tested on an Apple Silicon Mac |
 
 ### Fork and upstream compared
 
@@ -143,7 +198,7 @@ upstream `main` at `8ddab14`, as each project documents it:
 | SoapySDR module | `driver=birriasdr`, opt-in build flag. Sample-count timestamps, 20 or 40 MHz bandwidth, and settings for blanking suppression, the channel-filtered tap and the restart budget | `driver=birria`, built whenever SoapySDR is installed. All four native rates, with rate changes while streaming. No timestamps or bandwidth control |
 | Network output | None | `birria_udp`, raw CS16 over UDP |
 | Other tools | `birria_ble`, `birria_rx --recover`, and the Python Wi-Fi and BLE decoders | None |
-| Tested hardware | EDUP EP-AX1672 (`0e8d:7961`) under WSL2 and usbipd | COMFAST `3574:6211` on a Raspberry Pi 5 and macOS, and a generic-ID board |
+| Tested hardware | EDUP EP-AX1672 (`0e8d:7961`) under WSL2 and usbipd, and natively on Windows 11 (this port) | COMFAST `3574:6211` on a Raspberry Pi 5 and macOS, and a generic-ID board |
 
 The two SoapySDR modules have different driver keys and file names, but both
 projects install their library as `libbirriasdr`. Install them in separate
@@ -206,9 +261,32 @@ Runtime**. Connect the dongle to a USB 3.0 port, open the flowgraph and let it
 install its Python dependencies. The note inside the flowgraph explains the USB
 setup for each platform and the gain settings. On a Raspberry Pi 5, the
 flowgraph power-cycles the USB ports by default, which needs root and only works
-when the dongle is the only USB device connected.
+when the dongle is the only USB device connected. The flowgraph's USB notes
+cover Linux and macOS; on Windows use the library path instead — the
+CyberEther receiver has not been validated there.
 
 ## Build and try
+
+### Windows 10/11 (native)
+
+Bind the driver first — [docs/windows.md · Driver setup](docs/windows.md#driver-setup)
+— then, from an MSYS2 **UCRT64** shell with the toolchain, `cmake`, `ninja`
+and `libusb` (≥ 1.0.30; the library refuses older runtimes on Windows)
+installed:
+
+```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build
+./build/birria_rx --list
+./build/birria_rx capture.cs16 8000000 manual
+```
+
+The same commands work from PowerShell with `build\birria_rx.exe`. The full
+walkthrough, including what each step should print, is
+[docs/windows.md](docs/windows.md).
+
+### Linux and macOS
 
 You need a C compiler, CMake and the libusb development files. On Debian or
 Ubuntu, install them with
@@ -535,7 +613,8 @@ An optional [SoapySDR](https://github.com/pothosware/SoapySDR) module in
 gqrx, SDR++, GNU Radio (Soapy or osmocom sources) and other Soapy applications
 can use it. It needs a C++17 compiler and the SoapySDR development files
 (`sudo apt install libsoapysdr-dev soapysdr-tools` on Debian or Ubuntu,
-`brew install soapysdr` on macOS):
+`brew install soapysdr` on macOS; `pacman -S mingw-w64-ucrt-x86_64-soapysdr`
+in MSYS2's UCRT64 environment on Windows):
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBIRRIASDR_SOAPY=ON
@@ -543,6 +622,18 @@ cmake --build build -j
 sudo cmake --install build --prefix /usr/local
 SoapySDRUtil --probe=driver=birriasdr
 ```
+
+On Windows, drop the `sudo` and install into the MSYS2 tree instead:
+`cmake --install build --prefix /ucrt64` from the UCRT64 shell puts the
+module where MSYS2's `SoapySDRUtil` finds it with no environment variables;
+for a build-tree module, point `SOAPY_SDR_PLUGIN_PATH` at `build/soapy`. On
+machines with several identical adapters, set `BIRRIASDR_SOAPY_ALLOW=bus:addr`
+(the `[bus:addr]` suffix of the device label) so applications that auto-open
+device 0 pick the intended one. SDRangel and SDR++ bundle their own
+SoapySDR builds, so a module for them must be built against that host's
+exact headers — use [packaging/sdrangel](packaging/sdrangel/README.md) for
+SDRangel 8.0, or the SDR++ recipe in
+[docs/windows.md](docs/windows.md#gui-applications).
 
 Devices are listed as `BirriaSDR <board name>`. The USB location (`usb=bus:address`) is
 added to the label only when several identical boards are connected, because it
@@ -643,6 +734,7 @@ without warranty, so use it at your own risk.
 BirriaSDR builds on open-source drivers and earlier research into using Wi-Fi hardware for raw I/Q capture. Thanks to:
 
 - The [mt76-usb-macos](https://github.com/Network-Weather/mt76-usb-macos) Python userspace USB driver by Network Weather, which laid the foundation for BirriaSDR’s device access and firmware loading.
+- The [ot0tot/BirriaSDR](https://github.com/ot0tot/BirriaSDR) fork (branch `mt7961-wifi-usb`), whose native-Windows platform seam — pthread shims, monotonic clock, USB device lock, RAW-IO transfers — this port adapted and extended.
 - The upstream [mt76](https://github.com/openwrt/mt76) Linux driver and its contributors, which the userspace work builds on.
 - The [W1700K SDR](https://github.com/h0m3us3r/w1700k-sdr) project by h0m3us3r, related work that turns Wi-Fi hardware into a wideband SDR and documents capture registers and sample-clock controls.
 - The [MtkICAPtool](https://github.com/MtkWifiRev/MtkICAPtool) project by MtkWifiRev, earlier work that exposed the chipset’s internal I/Q capture capabilities.

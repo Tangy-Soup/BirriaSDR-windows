@@ -6,6 +6,12 @@ userland MT76 transport in this research project. Retained copyright notices,
 conditions and disclaimer are in LICENSES/BSD-3-Clause-Clear.txt. Source lineage:
 https://github.com/openwrt/mt76/tree/c5a3bd91aa735b669618610d5f0ebfa5786845a6
 
+The native Windows platform seam (src/platform.h and the Windows paths in
+src/io.c, src/usb.c and src/usb_stream.c) adapts the MIT-licensed
+ot0tot/BirriaSDR fork, branch mt7961-wifi-usb, tip 35439a9. Its copyright
+notice and MIT license apply to those adaptations:
+https://github.com/ot0tot/BirriaSDR/tree/mt7961-wifi-usb
+
 The high-level API takes design inspiration from librtlsdr. No librtlsdr
 implementation is incorporated: https://github.com/osmocom/rtl-sdr
 
